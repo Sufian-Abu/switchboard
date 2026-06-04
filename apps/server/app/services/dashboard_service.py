@@ -13,6 +13,28 @@ from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
 
 
+def _provider_health_rows() -> list[dict]:
+    """Snapshot every provider currently tracked. Returns a JSON-safe list."""
+    # Imported here rather than at module top to avoid a cycle:
+    # deps imports services modules; this service shouldn't reach back too early.
+    from app.api.deps import get_health_tracker
+
+    tracker = get_health_tracker()
+    rows: list[dict] = []
+    for snap in tracker.snapshot_all():
+        rows.append(
+            {
+                "provider": snap.provider,
+                "band": snap.band,
+                "sample_size": snap.sample_size,
+                "error_rate_pct": round(snap.error_rate * 100, 1),
+                "latency_p50_ms": int(snap.latency_p50_ms),
+                "latency_p95_ms": int(snap.latency_p95_ms),
+            }
+        )
+    return rows
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -157,6 +179,7 @@ async def overview(window_hours: int = 24) -> dict:
         "cost_rows": cost_rows,
         "task_breakdown": by_task_full,
         "recent": recent,
+        "provider_health": _provider_health_rows(),
     }
 
 

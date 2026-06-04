@@ -21,6 +21,7 @@ from router.costing import CostEngine
 from router.decision_engine import DecisionEngine
 from router.embedder import try_get_embedder
 from router.errors import ConfigError
+from router.health import ProviderHealthTracker
 from router.providers.base import BaseProvider
 from router.providers.gemini import GeminiProvider
 from router.providers.groq import GroqProvider
@@ -59,7 +60,11 @@ def get_classifier() -> TaskClassifier:
 
 @lru_cache(maxsize=1)
 def get_decision_engine() -> DecisionEngine:
-    return DecisionEngine(config=get_config(), cost_engine=get_cost_engine())
+    return DecisionEngine(
+        config=get_config(),
+        cost_engine=get_cost_engine(),
+        health_tracker=get_health_tracker(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -70,6 +75,12 @@ def get_cost_engine() -> CostEngine:
     except (FileNotFoundError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
     return CostEngine(pricing=pricing)
+
+
+@lru_cache(maxsize=1)
+def get_health_tracker() -> ProviderHealthTracker:
+    """Singleton tracker. In-process — survives the lifetime of the worker."""
+    return ProviderHealthTracker()
 
 
 @lru_cache(maxsize=1)
@@ -114,6 +125,7 @@ def reset_caches() -> None:
         get_classifier,
         get_decision_engine,
         get_cost_engine,
+        get_health_tracker,
         get_semantic_cache,
         get_provider,
     ):

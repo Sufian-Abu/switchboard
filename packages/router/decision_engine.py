@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from router.costing import CostEngine
+from router.health import HealthBand, ProviderHealthTracker
 from router.preference import PreferenceSpec, select_chain
 from router.schemas import ClassifiedTask, RoutingDecision
 
@@ -62,9 +63,33 @@ def _when_matches(
 class DecisionEngine:
     """Reads YAML routing rules and picks a provider+model per request."""
 
-    def __init__(self, config: dict, cost_engine: CostEngine | None = None) -> None:
+    _VALID_HEALTH_THRESHOLDS: tuple[HealthBand, ...] = ("degraded", "unhealthy")
+
+    def __init__(
+        self,
+        config: dict,
+        cost_engine: CostEngine | None = None,
+        health_tracker: ProviderHealthTracker | None = None,
+    ) -> None:
         self.config = config
         self.cost_engine = cost_engine or CostEngine(pricing={})
+        # Optional. When None, `avoid_if_health:` rule clauses are no-ops.
+        self.health_tracker = health_tracker
+
+    def _filter_by_health(
+        self,
+        candidates: list[tuple[str, str]],
+        threshold: HealthBand | None,
+    ) -> list[tuple[str, str]]:
+        """Drop candidates whose health is at or beyond the rule's threshold."""
+        if threshold is None or self.health_tracker is None:
+            return candidates
+        kept: list[tuple[str, str]] = []
+        for provider, model in candidates:
+            snap = self.health_tracker.snapshot(provider)
+            if not snap.is_avoidable(threshold):
+                kept.append((provider, model))
+        return kept
 
     def decide(
         self,
@@ -91,6 +116,23 @@ class DecisionEngine:
             candidates: list[tuple[str, str]] = [(use["provider"], use["model"])]
             candidates.extend((fb["provider"], fb["model"]) for fb in fallbacks_raw)
 
+            # Health-based avoidance: drop providers whose rolling-window stats
+            # cross the rule's threshold before any other filtering runs.
+            health_threshold_raw = rule.get("avoid_if_health")
+            health_threshold: HealthBand | None = None
+            if health_threshold_raw is not None:
+                if health_threshold_raw not in self._VALID_HEALTH_THRESHOLDS:
+                    # Typo guard: raise rather than silently ignore.
+                    raise ValueError(
+                        f"Rule {rule.get('name', '?')!r} has invalid `avoid_if_health`: "
+                        f"{health_threshold_raw!r} (must be one of {self._VALID_HEALTH_THRESHOLDS})"
+                    )
+                health_threshold = health_threshold_raw  # type: ignore[assignment]
+            candidates = self._filter_by_health(candidates, health_threshold)
+            if not candidates:
+                # All candidates avoided due to health — fall through to next rule.
+                continue
+
             spec = PreferenceSpec.from_rule(rule)
             chain = select_chain(candidates, spec, self.cost_engine)
             if not chain:
@@ -100,6 +142,8 @@ class DecisionEngine:
             primary_provider, primary_model = chain[0]
             fallbacks = chain[1:]
             base_reason = f"Matched routing rule: {rule.get('name', 'unnamed_rule')}"
+            if health_threshold is not None:
+                base_reason += f" | filtered by avoid_if_health={health_threshold}"
             if spec.policy == "cheapest":
                 base_reason += " | reordered by cheapest-first preference"
             if spec.max_cost_per_call is not None:

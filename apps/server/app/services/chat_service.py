@@ -20,6 +20,7 @@ from app.api.deps import (
     get_classifier,
     get_cost_engine,
     get_decision_engine,
+    get_health_tracker,
     get_provider,
     get_semantic_cache,
 )
@@ -341,6 +342,7 @@ class ChatService:
             else:
                 observe_cache("miss")
 
+        health_tracker = get_health_tracker()
         for provider_name, model_name in (candidates if not cache_hit else []):
             started = perf_counter()
             try:
@@ -353,6 +355,7 @@ class ChatService:
                 )
                 latency = perf_counter() - started
                 observe_provider_call(provider_name, model_name, "succeeded", latency)
+                health_tracker.record(provider_name, success=True, latency_ms=latency * 1000.0)
                 attempts.append(
                     RoutingAttempt(
                         provider=provider_name,
@@ -373,6 +376,7 @@ class ChatService:
             except ProviderError as exc:
                 latency = perf_counter() - started
                 observe_provider_call(provider_name, model_name, "failed", latency)
+                health_tracker.record(provider_name, success=False, latency_ms=latency * 1000.0)
                 attempts.append(
                     RoutingAttempt(
                         provider=provider_name,

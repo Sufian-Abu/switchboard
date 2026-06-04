@@ -39,6 +39,30 @@
   </div>
 </div>
 
+{% if provider_health %}
+<div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+  <h2 class="font-semibold mb-1">Provider health</h2>
+  <p class="text-xs text-slate-500 mb-3">Rolling 5-minute window. Routing rules with <code>avoid_if_health: degraded</code> will skip providers shown amber or red until they recover.</p>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+    {% for p in provider_health %}
+    {% set band_cls = 'border-emerald-300 bg-emerald-50' if p.band == 'healthy' else ('border-amber-300 bg-amber-50' if p.band == 'degraded' else 'border-red-300 bg-red-50') %}
+    {% set band_text_cls = 'text-emerald-700' if p.band == 'healthy' else ('text-amber-700' if p.band == 'degraded' else 'text-red-700') %}
+    <div class="border {{ band_cls }} rounded-lg p-3">
+      <div class="flex items-center justify-between mb-1">
+        <div class="font-medium">{{ p.provider }}</div>
+        <span class="text-xs font-medium {{ band_text_cls }} uppercase">{{ p.band }}</span>
+      </div>
+      <div class="text-xs text-slate-600 space-y-0.5">
+        <div>error rate: {{ p.error_rate_pct }}%</div>
+        <div>p50: {{ p.latency_p50_ms }}ms · p95: {{ p.latency_p95_ms }}ms</div>
+        <div class="text-slate-400">{{ p.sample_size }} samples</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
   <h2 class="font-semibold mb-1">Task type breakdown</h2>
   <p class="text-xs text-slate-500 mb-3">What kind of work the router classified — by request count and by USD spend.</p>
