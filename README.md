@@ -1,35 +1,48 @@
 # Switchboard
 
-> Drop-in OpenAI-compatible LLM router that picks the right model per request, falls back when one is down, and shows you the cost — before, during, and after the call.
+A cost-aware LLM router with a built-in dashboard. Drop it in front of your app, send OpenAI-shaped requests, and stop worrying about which provider to use, what it costs, or what to do when one of them goes down.
 
----
+## The problem
 
-## Why use this
+Most apps using LLMs today aren't sticking to one provider. You probably have an OpenAI key, an Anthropic or Gemini key, maybe Groq for cheap fast inference, and Ollama for the things you'd rather keep on-device. Every team I've talked to ends up in roughly the same place: a thin Python file that picks a provider based on some half-written rules, a spreadsheet somewhere with last month's spend, and a quiet feeling that nobody actually knows where the money is going.
 
-Most "LLM router" projects are passthrough proxies. Switchboard goes further: it **classifies each request**, picks a provider/model based on **YAML rules and live pricing**, shows you the **expected cost across every model before you send**, and ships with a **dashboard** so you actually know what your spend looks like.
+The reason isn't that the problem is hard. The reason is that the tools for it pull you in two directions. On one side you have proxies like LiteLLM and OpenRouter — they unify the API surface, which is genuinely useful, but they don't really *route*. They send your request to whatever model you named, hand back the response, and that's the end of their job. They have no opinion about whether a one-line rewrite request should hit GPT-4 or a 1B local model. On the other side you have research projects like RouteLLM that take routing seriously, but you don't really run those in production.
 
-| | **Switchboard** | LiteLLM | RouteLLM | OpenRouter |
-|---|---|---|---|---|
-| OpenAI-compatible endpoint | ✓ | ✓ | partial | ✓ |
-| Task-aware routing (rewrite vs reasoning vs ...) | ✓ | partial | ✓ research | ✗ |
-| YAML rules for routing | ✓ | partial | ✗ | ✗ |
-| **Pre-flight cost preview per model** | ✓ | ✗ | ✗ | ✗ |
-| **Per-response cost block** | ✓ | ✗ | ✗ | partial |
-| **Cost-aware routing (`prefer: cheapest`)** | ✓ | ✗ | ✗ | ✗ |
-| **Built-in dashboard** | ✓ | ✗ | ✗ | hosted only |
-| Fallback chain on errors | ✓ | ✓ | ✗ | ✓ |
-| Per-rule semantic cache | ✓ | ✗ | ✗ | ✗ |
-| Hybrid keyword + embeddings classifier | ✓ | ✗ | ✓ | ✗ |
-| Streaming with routing metadata | ✓ | partial | ✗ | ✓ |
-| Eval harness (CI-friendly) | ✓ | ✗ | partial | ✗ |
-| Local Ollama first-class | ✓ | ✓ | ✗ | ✗ |
-| Self-host | ✓ | ✓ | ✓ | ✗ |
+What's missing is a thing that sits in the middle. Something that:
 
----
+- Looks at the request and decides what kind of task it is (rewrite, summarisation, structured extraction, reasoning, plain chat).
+- Picks a provider/model from a YAML file you actually control, with fallback when one provider rate-limits you.
+- Shows you, in real time, how much each call costs — and what each candidate model *would have* cost.
+- Gives you a dashboard so you can answer "what did we spend yesterday" without writing a script.
+
+That's what this is.
+
+## What it does
+
+A request comes in on `POST /v1/chat/completions`. The classifier looks at the messages, decides this is (say) a `summarization` task. The decision engine consults `configs/config.yaml`, finds the rule for that task type, and reads off a provider + model — plus an ordered list of fallbacks if the primary fails. If the rule says `prefer: cheapest`, the candidates get reordered by expected USD cost before picking the primary. If everything succeeds the response comes back in OpenAI's normal shape, with two extra blocks: `routing` (what was chosen and why) and `cost` (actual USD spent on this call). A row goes into a local SQLite database. The dashboard reads from that database.
+
+That's the whole thing. The interesting bits are in the details — how the fallback chain interacts with streaming, how the cost preview works without burning tokens, how the semantic cache hooks into rules without breaking anything else — but the shape is small enough to fit in a paragraph.
+
+## See it in action
+
+> Screenshots live in `docs/screenshots/`. If you've cloned the repo and haven't added them yet, follow the instructions in [docs/screenshots/README.md](docs/screenshots/README.md) to capture them in 30 seconds.
+
+| | |
+|---|---|
+| **Overview** | KPIs, cost-by-provider chart, recent calls, task-type breakdown |
+| **Playground** | Live cost preview per model as you type, then run with streaming |
+| **Requests** | Full audit log: request ID, provider, model, tokens, USD, attempts |
+| **Cost** | 7-day spend, daily chart, by-provider and by-model tables |
+
+![Dashboard overview](docs/screenshots/dashboard.png)
+
+![Playground with live cost preview](docs/screenshots/playground.png)
+
+![Cost analytics](docs/screenshots/cost.png)
 
 ## Quick start
 
-### Docker (recommended)
+### With Docker (one command)
 
 ```bash
 docker run -p 8000:8000 \
@@ -38,50 +51,61 @@ docker run -p 8000:8000 \
   ghcr.io/<your-username>/switchboard:latest
 ```
 
-Open http://localhost:8000 — you land on the dashboard.
+Open http://localhost:8000 and you land on the dashboard. Send a request through `/v1/chat/completions` and watch it appear there.
 
-### docker-compose (with local Ollama)
+### With docker-compose (router + local Ollama)
 
 ```bash
 git clone https://github.com/<your-username>/switchboard
 cd switchboard
-cp apps/server/.env.example apps/server/.env  # add your keys
+cp apps/server/.env.example apps/server/.env   # then fill in your keys
 docker compose --profile with-ollama up
 ```
 
-This launches the router on `:8000` and Ollama on `:11434`. The first request to a routing rule that uses Ollama will pull the model on demand.
+This runs the router on `:8000` and a local Ollama daemon on `:11434`. Any routing rule that uses Ollama will work straight away — pull the model the first time and it stays cached.
 
-### Python (manual install)
+### From source
 
 ```bash
 git clone https://github.com/<your-username>/switchboard
 cd switchboard
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"            # add ",embeddings" for the hybrid classifier
-cp apps/server/.env.example apps/server/.env  # add your keys
+pip install -e ".[dev]"
 
+# Optional: install the embeddings extra for the hybrid classifier and the
+# semantic cache. Adds ~600 MB of torch. Most people don't need it day-one.
+pip install -e ".[dev,embeddings]"
+
+cp apps/server/.env.example apps/server/.env    # then fill in your keys
 cd apps/server
 PYTHONPATH=../../packages:./ uvicorn app.main:app --reload
 ```
 
-Open http://localhost:8000.
+## How a request actually flows
 
----
+You define rules in `configs/config.yaml`. Here's a small slice:
 
-## What you get out of the box
+```yaml
+routing:
+  rules:
+    # Cheap, fast text edits go to Groq's smallest model.
+    - name: rewrite_to_groq_small
+      when: { task_type: rewrite }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
 
-### Built-in dashboard
-
+    # Reasoning is more expensive on cloud, so try local Ollama first if
+    # it's cheaper, and fall back to Groq's 70B model if Ollama is down.
+    - name: reasoning_cheapest
+      when: { task_type: reasoning }
+      use:       { provider: groq, model: llama-3.3-70b-versatile }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+      prefer: cheapest
+      max_cost_per_call: 0.01
+      cache: true
 ```
-http://localhost:8000/dashboard
-```
 
-- **Overview** — KPIs (requests, success rate, total USD, tokens), cost-by-provider bar, task-type doughnut, recent calls.
-- **Playground** — type a prompt, see live cost preview across every priced model as you type, run it (streaming), see the actual routing decision + cost.
-- **Requests** — full audit log: timestamp, request ID, provider, model, tokens, USD, status, attempt count.
-- **Cost** — last-7-day spend, daily line chart, by-provider and by-model tables.
-
-### One curl gets you everything
+Now hit the endpoint:
 
 ```bash
 curl -X POST http://localhost:8000/v1/chat/completions \
@@ -89,32 +113,32 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"please rewrite this email politely"}]}'
 ```
 
-Response shape (truncated):
+You get back a normal OpenAI-shaped response with two extra blocks bolted on the side:
 
 ```jsonc
 {
-  "id": "chatcmpl-…",
+  "id": "chatcmpl-...",
   "object": "chat.completion",
-  "choices": [{ "message": { "role": "assistant", "content": "…" }, ... }],
+  "model": "llama-3.1-8b-instant",
+  "choices": [{ "message": { "role": "assistant", "content": "..." }, ... }],
   "usage": { "prompt_tokens": 43, "completion_tokens": 13, "total_tokens": 56 },
 
-  // Why this provider was chosen + the full attempt chain
   "routing": {
     "task_type": "rewrite",
     "selected_provider": "groq",
     "selected_model": "llama-3.1-8b-instant",
     "reason": "Matched routing rule: rewrite_to_groq_small",
     "attempts": [
-      { "provider": "groq", "model": "llama-3.1-8b-instant", "status": "succeeded", "upstream_status": null, "error": null }
+      { "provider": "groq", "model": "llama-3.1-8b-instant",
+        "status": "succeeded", "upstream_status": null, "error": null }
     ]
   },
 
-  // Actual USD cost computed from token counts × per-model rates
   "cost": {
     "currency": "USD",
-    "estimated_usd": 3.19e-06,
-    "input_usd": 2.15e-06,
-    "output_usd": 1.04e-06,
+    "estimated_usd": 0.00000319,
+    "input_usd": 0.00000215,
+    "output_usd": 0.00000104,
     "input_rate_per_million": 0.05,
     "output_rate_per_million": 0.08,
     "pricing_known": true
@@ -122,252 +146,105 @@ Response shape (truncated):
 }
 ```
 
-### Pre-flight cost preview
+If you want to know what something *would* cost before you send it, hit `/v1/chat/estimate` with the same body. You get back a USD min/max per priced model, plus the cheapest and most expensive picks. The playground page does this for you as you type.
 
-Before you send, ask what each model would cost:
+If you want streaming, add `"stream": true`. You get standard OpenAI SSE chunks, then a `data: {"x_smart_router_meta": true, "routing": {...}, "cost": {...}}` event with the routing + cost numbers, then `data: [DONE]`. OpenAI clients ignore the metadata event so existing SDKs keep working unchanged.
 
-```bash
-curl -X POST http://localhost:8000/v1/chat/estimate \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"your prompt"}],"assumed_max_tokens":256}'
-```
+## What's in the box
 
-Returns a USD `min` (input only) and `max` (input + assumed max output) per priced model, plus the cheapest/most-expensive picks.
+**Providers.** Mock (zero-config default for tests), Groq, Gemini, OpenAI, and Ollama. The three OpenAI-compatible cloud providers share a streaming helper at `packages/router/providers/_openai_compat.py`, so adding another one (Together, Fireworks, anything OpenAI-shaped) is ~30 lines. Ollama is implemented separately because its streaming format is JSONL rather than SSE.
 
-### Streaming
+**Cost engine.** Pricing lives in `configs/pricing.yaml` — change it without touching code. Every successful call gets a USD breakdown. The cost preview endpoint uses a rule-of-thumb token estimator (max of chars/4 and words×1.3) so you don't burn tokens just to know what something would cost. It's not exact, but it's the right order of magnitude.
 
-Add `"stream": true` to the chat request. Response is `text/event-stream` with OpenAI-shaped delta events, then a custom router-metadata event with routing + cost + usage, then `data: [DONE]`. OpenAI clients ignore the metadata field — backwards-compatible.
+**Classifier.** Two layers, used in order. The keyword classifier is a hand-curated set of triggers per task type — fast, deterministic, no model loading. If nothing matches, the optional embeddings classifier kicks in: it embeds your prompt and the prototype examples for each task type, picks the closest. That second layer needs the `embeddings` extra (`pip install ".[embeddings]"`); the first works on its own.
 
----
+**Fallback chain.** Each rule can list fallback (provider, model) pairs after `use:`. If the primary fails with a retryable error (rate limit, 5xx, network), the next candidate is tried. 4xx errors are not retried — a malformed request won't succeed elsewhere either. Streaming doesn't fall back mid-response (that would corrupt output) — if the first chunk hasn't been sent yet you still get a fallback try, but once a single chunk lands, errors abort the stream.
+
+**Semantic cache.** Per-rule opt-in (`cache: true`). When enabled, the cache embeds the prompt, looks for a similar one above a cosine-similarity threshold for the same model. Hit → return the cached response, no provider call. Miss → call the provider, store the response. In-memory, LRU eviction at 256 entries by default. Good enough for a single instance; replace with sqlite-vss or a real vector store before scaling horizontally.
+
+**Dashboard.** Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts, HTMX for any future interactivity. No build step, no React app to maintain.
+
+**Auth.** Disabled by default. Set `API_TOKEN` in the environment and `/v1/*` paths require `Authorization: Bearer <token>`. The dashboard stays open — put it behind a reverse proxy if you need to lock it down.
 
 ## Configuration
 
-### Routing rules — `configs/config.yaml`
+Three files do all the work. They're meant to be edited.
 
-```yaml
-default:
-  provider: mock
-  model: mock-default-model
+### `configs/config.yaml` — routing rules
 
-routing:
-  rules:
-    # Simple text edits → small Groq model
-    - name: rewrite_to_groq_small
-      when: { task_type: rewrite }
-      use:  { provider: groq, model: llama-3.1-8b-instant }
+Every rule has a `when:` (task type to match), a `use:` (primary provider+model), and optional `fallbacks:`. The cost-aware fields (`prefer:`, `max_cost_per_call:`) and the `cache:` flag are all optional.
 
-    # Reasoning → cheapest of [Groq large, local Ollama]
-    - name: reasoning_cheapest
-      when: { task_type: reasoning }
-      use:       { provider: groq, model: llama-3.3-70b-versatile }
-      fallbacks:
-        - { provider: ollama, model: llama3.2:1b }
-      prefer: cheapest        # reorder candidates by expected USD
-      max_cost_per_call: 0.01 # filter — skip rule entirely if all candidates exceed
-      cache: true             # opt-in to the semantic cache for this rule
-```
+### `configs/pricing.yaml` — per-model pricing
 
-Reload by restarting the server (cached at startup for speed).
+USD per million tokens, split by input/output. Use `"*"` as a model key for a wildcard ("all of this provider's models cost $0", which is true for Ollama). Models without entries get `pricing_known: false` and are sorted last under `prefer: cheapest`.
 
-### Pricing — `configs/pricing.yaml`
+### `apps/server/.env` — secrets and feature flags
 
-```yaml
-groq:
-  llama-3.1-8b-instant:   { input: 0.05, output: 0.08 }
-  llama-3.3-70b-versatile: { input: 0.59, output: 0.79 }
-gemini:
-  gemini-2.5-flash:        { input: 0.30, output: 2.50 }
-ollama:
-  "*":                     { input: 0.0,  output: 0.0 }   # wildcard — all local models = $0
-```
-
-All values are USD per 1,000,000 tokens. Models without a price get `pricing_known: false` in the response and are sorted last under `prefer: cheapest`.
-
-### Environment — `apps/server/.env`
-
-```env
-APP_ENV=development
-API_TOKEN=                            # empty = auth off; set to require bearer on /v1/*
-
-OPENAI_API_KEY=
-GROQ_API_KEY=
-GEMINI_API_KEY=
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Phase 2b opt-ins (require `.[embeddings]` extra)
-ENABLE_EMBEDDING_CLASSIFIER=false
-ENABLE_SEMANTIC_CACHE=false
-SEMANTIC_CACHE_SIMILARITY_THRESHOLD=0.95
-```
-
----
-
-## Architecture
-
-```
-┌──────────────┐
-│ HTTP request │
-└──────┬───────┘
-       ▼
-┌─────────────────────┐
-│ BearerAuth          │  optional, on /v1/*
-├─────────────────────┤
-│ RequestIDMiddleware │  inbound rid honored; otherwise generated
-├─────────────────────┤
-│ Route               │  /v1/chat/completions, /v1/chat/estimate, ...
-└──────┬──────────────┘
-       ▼
-┌──────────────────────────────────────────────────────────┐
-│ ChatService.create_completion / create_completion_stream │
-│                                                          │
-│   1.  TaskClassifier.classify()                          │
-│       └─ keyword rules → embeddings fallback             │
-│                                                          │
-│   2.  DecisionEngine.decide()                            │
-│       └─ match rule → preference reorder → candidate chain│
-│                                                          │
-│   3.  Semantic cache lookup (if rule opts in)            │
-│                                                          │
-│   4.  for (provider, model) in chain:                    │
-│         provider.chat()   or   provider.stream()         │
-│         on retryable error → next candidate              │
-│                                                          │
-│   5.  CostEngine.estimate()                              │
-│   6.  Persist request log row                            │
-│   7.  Return ChatCompletionResponse (+ routing + cost)   │
-└──────────────────────────────────────────────────────────┘
-```
-
-**Project layout:**
-
-```
-switchboard/
-├── apps/server/                # FastAPI app
-│   ├── app/
-│   │   ├── api/                #   routes + deps
-│   │   ├── core/               #   settings + config loader
-│   │   ├── db/                 #   SQLAlchemy models + async session
-│   │   ├── schemas/            #   Pydantic models
-│   │   ├── services/           #   ChatService, dashboard_service, estimate_service
-│   │   ├── templates/          #   Jinja2 (dashboard + playground)
-│   │   └── main.py             #   FastAPI app, lifespan, middleware
-│   └── .env.example
-├── packages/router/            # Provider-agnostic routing engine
-│   ├── classifier.py           #   hybrid keyword + embeddings classifier
-│   ├── decision_engine.py      #   YAML rules → RoutingDecision
-│   ├── preference.py           #   cost-aware candidate reorder
-│   ├── costing.py              #   USD estimation
-│   ├── embedder.py             #   optional sentence-transformers wrapper
-│   ├── cache.py                #   in-memory semantic cache
-│   ├── eval.py                 #   `python -m router.eval` CLI
-│   ├── errors.py               #   typed exceptions
-│   └── providers/              #   mock, openai, groq, gemini, ollama
-├── configs/
-│   ├── config.yaml             # routing rules
-│   └── pricing.yaml            # per-model USD/1M-token rates
-├── evals/
-│   └── example.yaml            # sample test suite
-├── tests/                      # 84 tests, all offline
-├── Dockerfile
-├── docker-compose.yml
-└── pyproject.toml
-```
-
----
-
-## Endpoints
-
-| Method · path | Purpose | Auth required* |
+| Variable | Default | What it does |
 |---|---|---|
-| POST `/v1/chat/completions` | OpenAI-compatible chat (streaming or JSON) | ✓ |
-| POST `/v1/chat/estimate` | Pre-flight cost preview across all priced models | ✓ |
-| GET `/v1/cache/stats` | Semantic cache stats | ✓ |
-| GET `/health` | Liveness probe | — |
-| GET `/` | Redirect to `/dashboard` | — |
-| GET `/dashboard` | Overview KPIs + breakdowns | — |
-| GET `/dashboard/playground` | Interactive prompt + live cost + streaming chat | — |
-| GET `/dashboard/requests` | 100 most-recent calls audit | — |
-| GET `/dashboard/cost` | Last-7-day cost analytics | — |
-| GET `/docs` | Swagger UI | — |
+| `APP_NAME` | `Switchboard` | Used in `/health` and the dashboard header |
+| `API_TOKEN` | _(empty)_ | Set to require bearer-token auth on `/v1/*` |
+| `OPENAI_API_KEY` | _(empty)_ | Needed only when a rule routes to OpenAI |
+| `GROQ_API_KEY` | _(empty)_ | Needed only when a rule routes to Groq |
+| `GEMINI_API_KEY` | _(empty)_ | Needed only when a rule routes to Gemini |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to find the Ollama daemon |
+| `ENABLE_EMBEDDING_CLASSIFIER` | `false` | Use embeddings as a classifier fallback |
+| `ENABLE_SEMANTIC_CACHE` | `false` | Turn on the semantic cache (rules also need `cache: true`) |
 
-`*` only when `API_TOKEN` is set in the environment. Dashboard pages stay open for local use; put them behind a reverse proxy for production.
+## API surface
 
----
+| Method · path | Purpose |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI-compatible chat (JSON or SSE) |
+| `POST /v1/chat/estimate` | Cost preview across every priced model |
+| `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
+| `GET  /health` | Liveness probe |
+| `GET  /` | Redirect to the dashboard |
+| `GET  /dashboard{,/playground,/requests,/cost}` | Web UI |
+| `GET  /docs` | Auto-generated Swagger UI |
 
 ## Testing
 
-The pytest suite is fully offline — `TestClient` + MockProvider, no API keys required.
+The pytest suite runs fully offline. `TestClient` plus the `MockProvider` cover every code path; no API keys required.
 
 ```bash
-pytest                       # all 84 tests, ~1s
-pytest tests/test_chat_endpoint.py -v
+pytest                       # ~1 second, 84 tests
+pytest -v tests/test_chat_endpoint.py
 ```
 
-### Eval harness
-
-Score routing decisions against a YAML test suite:
+There's also an eval harness for routing quality. Cases live in YAML; assertions are simple ("this prompt should route to provider X", "this prompt should hit model whose name contains Y"). Run it with:
 
 ```bash
 python -m router.eval --cases evals/example.yaml
 ```
 
-Sample output:
+You get a per-case PASS/FAIL report and an exit code, so it slots into CI without further glue.
 
-```
-[PASS] simple_rewrite                  -> groq/llama-3.1-8b-instant
-[PASS] summary_request                 -> gemini/gemini-2.5-flash
-[PASS] extraction_request              -> groq/llama-3.3-70b-versatile
-[PASS] reasoning_uses_local_when_cheapest -> ollama/llama3.2:1b
-[PASS] generic_chat_falls_through      -> ollama/llama3.2:1b
+## What it doesn't do (yet)
 
-5/5 passed; 0 failed
-```
+- **No Anthropic provider.** Planned for the next phase. Easy to add — same shape as the OpenAI-compatible ones, just a different request body.
+- **The keyword classifier is hand-curated.** It works well for the common task types but you'll need to add rules as your usage drifts. The embeddings classifier helps but isn't a replacement for thinking about your domain.
+- **The semantic cache is in-memory only.** Fine for a single instance, not for multi-instance deployments.
+- **Cost preview uses a rule-of-thumb token estimator.** Off by maybe 10-15% versus the real tokenizer. Good for decisions, not for billing.
+- **Streaming has no fallback mid-response.** If the primary breaks after sending the first chunk, the stream aborts. (The non-streaming path falls back cleanly.)
+- **No rate limiting or multi-tenant auth.** A single bearer token is all that's built in. Put it behind nginx/Caddy if you need more.
 
-Exit code 0/1 — wire into CI.
-
----
-
-## Provider matrix
-
-| Provider | Chat | Streaming | Notes |
-|---|---|---|---|
-| Mock | ✓ | ✓ | Zero-config default; word-by-word streaming for tests |
-| Groq | ✓ | ✓ | OpenAI-compatible; needs `GROQ_API_KEY` |
-| Gemini | ✓ | ✓ | OpenAI-compat endpoint; needs `GEMINI_API_KEY` |
-| OpenAI | ✓ | ✓ | Needs `OPENAI_API_KEY` |
-| Ollama | ✓ | ✓ | Local; needs daemon on `OLLAMA_BASE_URL` |
-
-Adding a provider is ~50 lines: implement `chat()` + `stream()` on `BaseProvider`, register in `apps/server/app/api/deps.py:get_provider`.
-
----
+I'd rather list these honestly than discover them on launch day.
 
 ## Roadmap
 
-**Phase 2c — multi-user**
-- Rate limiting (per-token, per-IP)
-- Plugin system for custom providers
-- Multi-tenant configs
-
-**Phase 3 — ecosystem**
-- More providers: Anthropic, AWS Bedrock, Together, Replicate, Cohere
-- Vector store backend for semantic cache (sqlite-vss / chromadb / qdrant)
-- Realtime dashboard via SSE push
-- Official Python + TypeScript SDKs
-
----
+The short version: more providers, a proper vector store backend for the cache, rate limiting, a small plugin system so the community can add providers without forking, and at some point a TypeScript SDK. None of these are blockers for what's here today.
 
 ## Contributing
 
-Bug reports, feature requests, and PRs welcome. Please open an issue before starting a large PR.
+PRs welcome. Open an issue first for anything larger than a typo so we can talk through the approach.
 
 ```bash
-pip install -e ".[dev]"
-pytest                            # before submitting
-ruff check . && black --check .   # formatting
+pip install -e ".[dev,embeddings]"
+pytest
+ruff check . && black --check .
 ```
-
----
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
