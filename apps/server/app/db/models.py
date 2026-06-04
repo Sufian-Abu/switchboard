@@ -28,6 +28,9 @@ class RequestLog(Base):
     task_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     selected_provider: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     selected_model: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Extracted from request.metadata.channel for per-channel analytics in
+    # OpenClaw-style integrations. Nullable for clients that don't tag.
+    channel: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -36,3 +39,6 @@ class RequestLog(Base):
     status: Mapped[str] = mapped_column(String(16), index=True)  # 'succeeded' | 'failed'
     attempts: Mapped[list | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Human-readable "why was this provider chosen?" — surfaced verbatim on the
+    # dashboard so users can trust the routing decision.
+    routing_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)

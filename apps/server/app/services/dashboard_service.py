@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Date, cast, func, select
+from sqlalchemy import func, select
 
 from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
@@ -94,6 +94,33 @@ async def overview(window_hours: int = 24) -> dict:
             for row in (await session.execute(by_task_q)).all()
         ]
 
+        # Richer task-type breakdown: count + total + avg cost. Surfaces
+        # "you spent 60% of your money on reasoning prompts" type insights.
+        by_task_full_q = (
+            select(
+                RequestLog.task_type,
+                func.count(RequestLog.id),
+                func.coalesce(func.sum(RequestLog.estimated_usd), 0.0),
+                func.coalesce(func.avg(RequestLog.estimated_usd), 0.0),
+            )
+            .where(RequestLog.ts >= cutoff)
+            .group_by(RequestLog.task_type)
+            .order_by(func.coalesce(func.sum(RequestLog.estimated_usd), 0.0).desc())
+        )
+        by_task_full = [
+            {
+                "task_type": row[0] or "unknown",
+                "count": int(row[1]),
+                "total_usd": float(row[2] or 0.0),
+                "avg_usd": float(row[3] or 0.0),
+                "pct_of_total": 0.0,  # filled in below
+            }
+            for row in (await session.execute(by_task_full_q)).all()
+        ]
+        if total_usd > 0:
+            for row in by_task_full:
+                row["pct_of_total"] = 100.0 * row["total_usd"] / total_usd
+
         recent_q = select(RequestLog).order_by(RequestLog.ts.desc()).limit(20)
         recent_orm = (await session.execute(recent_q)).scalars().all()
         recent = [
@@ -128,6 +155,7 @@ async def overview(window_hours: int = 24) -> dict:
             "values": [t[1] for t in by_task],
         },
         "cost_rows": cost_rows,
+        "task_breakdown": by_task_full,
         "recent": recent,
     }
 
@@ -142,6 +170,7 @@ async def recent_requests(limit: int = 100) -> list[dict]:
             "ts_display": _fmt_ts(r.ts),
             "request_id": r.request_id,
             "task_type": r.task_type,
+            "channel": r.channel,
             "selected_provider": r.selected_provider,
             "selected_model": r.selected_model,
             "prompt_tokens": r.prompt_tokens,
@@ -149,6 +178,7 @@ async def recent_requests(limit: int = 100) -> list[dict]:
             "estimated_usd": r.estimated_usd,
             "status": r.status,
             "attempts_count": len(r.attempts or []),
+            "routing_reason": r.routing_reason,
         }
         for r in rows_orm
     ]
@@ -198,10 +228,33 @@ async def cost_breakdown(window_days: int = 7) -> dict:
             for row in (await session.execute(by_model_q)).all()
         ]
 
-        # Daily cost — group by the date portion of ts. `cast(ts, Date)` is
-        # portable across SQLite and Postgres (and works with any other
-        # SQLAlchemy dialect we might add later).
-        day_col = cast(RequestLog.ts, Date).label("day")
+        # Per-channel breakdown — surfaces "WhatsApp cost me $0.07, work Slack
+        # cost me $2.34" type insights for OpenClaw and similar integrations.
+        # Includes rows where channel is NULL (clients that don't tag).
+        by_channel_q = (
+            select(
+                RequestLog.channel,
+                func.count(RequestLog.id),
+                func.coalesce(func.sum(RequestLog.estimated_usd), 0.0),
+            )
+            .where(RequestLog.ts >= cutoff)
+            .group_by(RequestLog.channel)
+            .order_by(func.coalesce(func.sum(RequestLog.estimated_usd), 0.0).desc())
+        )
+        by_channel = [
+            {
+                "channel": row[0] or "untagged",
+                "count": int(row[1]),
+                "usd": float(row[2] or 0.0),
+            }
+            for row in (await session.execute(by_channel_q)).all()
+        ]
+
+        # Daily cost — group by the date portion of ts.
+        # `func.date()` is portable across SQLite and Postgres: SQLite returns
+        # 'YYYY-MM-DD' strings, Postgres returns date objects. We normalise to
+        # strings in Python so chart labels stay consistent.
+        day_col = func.date(RequestLog.ts).label("day")
         day_q = (
             select(
                 day_col,
@@ -212,8 +265,6 @@ async def cost_breakdown(window_days: int = 7) -> dict:
             .order_by(day_col)
         )
         day_rows = (await session.execute(day_q)).all()
-        # The cast returns date objects on Postgres and strings on SQLite —
-        # normalise to YYYY-MM-DD for chart labels.
         daily_labels = [r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]) for r in day_rows]
         daily_values = [float(r[1] or 0.0) for r in day_rows]
 
@@ -224,5 +275,6 @@ async def cost_breakdown(window_days: int = 7) -> dict:
         "avg_usd": avg_usd,
         "by_provider": by_provider,
         "by_model": by_model,
+        "by_channel": by_channel,
         "daily_chart": {"labels": daily_labels, "values": daily_values},
     }

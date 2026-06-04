@@ -40,6 +40,33 @@
 </div>
 
 <div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+  <h2 class="font-semibold mb-1">Task type breakdown</h2>
+  <p class="text-xs text-slate-500 mb-3">What kind of work the router classified — by request count and by USD spend.</p>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-500 border-b">
+        <th class="py-2">Task type</th>
+        <th class="text-right">Requests</th>
+        <th class="text-right">Avg cost</th>
+        <th class="text-right">Total USD</th>
+        <th class="text-right">% of spend</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in task_breakdown %}
+      <tr class="border-b last:border-0">
+        <td class="py-2 font-mono text-xs">{{ row.task_type }}</td>
+        <td class="text-right">{{ row.count }}</td>
+        <td class="text-right">${{ '%.6f' % row.avg_usd }}</td>
+        <td class="text-right">${{ '%.6f' % row.total_usd }}</td>
+        <td class="text-right">{{ '%.1f' % row.pct_of_total }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
   <h2 class="font-semibold mb-3">Cost breakdown</h2>
   <table class="w-full text-sm">
     <thead>

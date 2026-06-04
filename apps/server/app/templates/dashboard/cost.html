@@ -52,6 +52,29 @@
     </table>
   </div>
   <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <h2 class="font-semibold mb-3">By channel</h2>
+    <p class="text-xs text-slate-500 mb-3">Spend grouped by `metadata.channel` on the request. Useful for OpenClaw-style integrations.</p>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-slate-500 border-b">
+          <th class="py-2">Channel</th>
+          <th class="text-right">Calls</th>
+          <th class="text-right">USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in by_channel %}
+        <tr class="border-b last:border-0">
+          <td class="py-2 font-mono text-xs">{{ row.channel }}</td>
+          <td class="text-right">{{ row.count }}</td>
+          <td class="text-right">${{ '%.6f' % row.usd }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
     <h2 class="font-semibold mb-3">By model</h2>
     <table class="w-full text-sm">
       <thead>
