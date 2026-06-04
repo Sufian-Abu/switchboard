@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # returns 503 with a structured error until the next UTC day.
     max_daily_usd: float = 0.0
 
+    # Soft cap: when today's spend is at or above this fraction of MAX_DAILY_USD,
+    # rules that have a fallback chain start preferring the cheapest candidate
+    # instead of their default order. Continues serving traffic — just routes
+    # to cheaper alternatives as you approach the hard cap. 0 disables; only
+    # active when MAX_DAILY_USD > 0. Example: 0.8 = degrade at 80%.
+    daily_soft_cap_pct: float = 0.0
+
     # When False (default), client requests carrying a `model:` field are rejected with 400.
     # Set True to keep the prior behaviour (route them through the mock provider so they
     # don't hit a real upstream by accident).

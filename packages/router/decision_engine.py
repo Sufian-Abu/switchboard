@@ -96,6 +96,7 @@ class DecisionEngine:
         classified_task: ClassifiedTask,
         request_model: str | None = None,
         metadata: dict[str, Any] | None = None,
+        budget_soft_cap: bool = False,
     ) -> RoutingDecision:
         if request_model:
             return RoutingDecision(
@@ -134,6 +135,17 @@ class DecisionEngine:
                 continue
 
             spec = PreferenceSpec.from_rule(rule)
+            # When the daily soft-cap is active, force cheapest-first across
+            # all candidates regardless of the rule's normal preference. The
+            # rule still gets honoured for fallback identity — just reordered.
+            if budget_soft_cap and len(candidates) > 1:
+                spec = PreferenceSpec(
+                    policy="cheapest",
+                    max_cost_per_call=spec.max_cost_per_call,
+                    assume_max_tokens=spec.assume_max_tokens,
+                    assume_prompt_tokens=spec.assume_prompt_tokens,
+                    allow_unknown_pricing_under_cap=spec.allow_unknown_pricing_under_cap,
+                )
             chain = select_chain(candidates, spec, self.cost_engine)
             if not chain:
                 # Every candidate exceeded `max_cost_per_call` — try next rule.
@@ -144,7 +156,9 @@ class DecisionEngine:
             base_reason = f"Matched routing rule: {rule.get('name', 'unnamed_rule')}"
             if health_threshold is not None:
                 base_reason += f" | filtered by avoid_if_health={health_threshold}"
-            if spec.policy == "cheapest":
+            if budget_soft_cap and len(candidates) > 1:
+                base_reason += " | reordered cheapest-first (daily soft-cap engaged)"
+            elif spec.policy == "cheapest":
                 base_reason += " | reordered by cheapest-first preference"
             if spec.max_cost_per_call is not None:
                 base_reason += f" | filtered by max_cost_per_call=${spec.max_cost_per_call}"

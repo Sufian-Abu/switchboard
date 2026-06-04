@@ -3,6 +3,45 @@
 {% block content %}
 <h1 class="text-2xl font-bold mb-4">Overview · last {{ window_hours }}h</h1>
 
+{% if burn_rate %}
+{% set ring_cls = 'border-red-300 bg-red-50' if burn_rate.status == 'exceeded' else ('border-amber-300 bg-amber-50' if burn_rate.status in ('soft_cap','projected_to_exceed') else 'border-emerald-300 bg-emerald-50') %}
+<div class="border {{ ring_cls }} rounded-xl p-4 mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="font-semibold">Today's spend</h2>
+    <span class="text-xs text-slate-500">UTC day</span>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide">Spent</div>
+      <div class="text-2xl font-semibold">${{ '%.6f' % burn_rate.spent_usd }}</div>
+      <div class="text-xs text-slate-500">of ${{ '%.6f' % burn_rate.cap_usd }} cap · {{ '%.1f' % burn_rate.pct_used }}%</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide">Projected EOD</div>
+      <div class="text-2xl font-semibold">${{ '%.6f' % burn_rate.projected_eod_usd }}</div>
+      <div class="text-xs text-slate-500">extrapolated at current burn rate</div>
+    </div>
+    <div>
+      <div class="text-xs text-slate-500 uppercase tracking-wide">Status</div>
+      <div class="text-2xl font-semibold">
+        {% if burn_rate.status == 'exceeded' %}
+          <span class="text-red-700">Exceeded</span>
+        {% elif burn_rate.status == 'soft_cap' %}
+          <span class="text-amber-700">Soft cap engaged</span>
+        {% elif burn_rate.status == 'projected_to_exceed' %}
+          <span class="text-amber-700">Projected over</span>
+        {% else %}
+          <span class="text-emerald-700">OK</span>
+        {% endif %}
+      </div>
+      {% if burn_rate.soft_cap_usd > 0 %}
+      <div class="text-xs text-slate-500">soft cap at ${{ '%.6f' % burn_rate.soft_cap_usd }}</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% if total_requests == 0 %}
 <div class="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-500">
   No requests logged yet. Send a request to <code class="bg-slate-100 px-1">/v1/chat/completions</code> and refresh.

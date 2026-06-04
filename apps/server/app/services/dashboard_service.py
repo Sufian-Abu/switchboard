@@ -13,6 +13,53 @@ from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
 
 
+async def _burn_rate_widget() -> dict | None:
+    """Burn-rate stats for the overview page: today's spend, the cap, the
+    projected end-of-day spend, and whether we're past the soft cap.
+
+    Returns None when MAX_DAILY_USD is 0 (no cap configured).
+    """
+    from datetime import datetime, timezone
+
+    from app.core.settings import settings
+    from app.services.budget_service import todays_spend_usd
+
+    cap = float(settings.max_daily_usd or 0.0)
+    if cap <= 0:
+        return None
+
+    spent = await todays_spend_usd()
+    now = datetime.now(timezone.utc)
+    seconds_elapsed = now.hour * 3600 + now.minute * 60 + now.second
+    seconds_in_day = 86400
+    # Avoid divide-by-zero in the first second of the day.
+    pace_pct = seconds_elapsed / seconds_in_day if seconds_elapsed > 0 else 1 / seconds_in_day
+    projected = spent / pace_pct if pace_pct > 0 else spent
+
+    soft_cap_pct = float(settings.daily_soft_cap_pct or 0.0)
+    soft_cap_usd = cap * soft_cap_pct if soft_cap_pct > 0 else 0.0
+    in_soft_cap = soft_cap_pct > 0 and spent >= soft_cap_usd
+
+    pct_used = (spent / cap) * 100 if cap > 0 else 0.0
+    status = "ok"
+    if spent >= cap:
+        status = "exceeded"
+    elif in_soft_cap:
+        status = "soft_cap"
+    elif projected >= cap:
+        status = "projected_to_exceed"
+
+    return {
+        "spent_usd": spent,
+        "cap_usd": cap,
+        "projected_eod_usd": projected,
+        "pct_used": pct_used,
+        "soft_cap_usd": soft_cap_usd,
+        "in_soft_cap": in_soft_cap,
+        "status": status,
+    }
+
+
 def _provider_health_rows() -> list[dict]:
     """Snapshot every provider currently tracked. Returns a JSON-safe list."""
     # Imported here rather than at module top to avoid a cycle:
@@ -180,6 +227,7 @@ async def overview(window_hours: int = 24) -> dict:
         "task_breakdown": by_task_full,
         "recent": recent,
         "provider_health": _provider_health_rows(),
+        "burn_rate": await _burn_rate_widget(),
     }
 
 

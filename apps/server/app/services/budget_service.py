@@ -46,6 +46,20 @@ async def assert_under_daily_cap() -> None:
         raise BudgetExceededError(spent=spent, cap=cap)
 
 
+async def is_in_soft_cap() -> bool:
+    """True when today's spend is past the soft-cap fraction of MAX_DAILY_USD.
+
+    When this returns True, the DecisionEngine will reorder fallback chains
+    to prefer the cheapest candidate — degrading gracefully rather than 503ing.
+    """
+    cap = float(settings.max_daily_usd or 0.0)
+    pct = float(settings.daily_soft_cap_pct or 0.0)
+    if cap <= 0 or pct <= 0:
+        return False
+    spent = await todays_spend_usd()
+    return spent >= cap * pct
+
+
 class BudgetExceededError(Exception):
     """Raised by `assert_under_daily_cap()` when today's spend ≥ MAX_DAILY_USD."""
 

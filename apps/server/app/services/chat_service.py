@@ -28,7 +28,7 @@ from app.core.settings import settings
 from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
 from app.metrics import observe_cache, observe_cost, observe_provider_call, observe_request
-from app.services.budget_service import assert_under_daily_cap
+from app.services.budget_service import assert_under_daily_cap, is_in_soft_cap
 
 
 def _reject_client_model_if_disabled(request_model: str | None) -> None:
@@ -133,10 +133,12 @@ class ChatService:
         messages_as_dict = [m.model_dump() for m in request.messages]
 
         classified_task = classifier.classify(messages_as_dict)
+        soft_cap = await is_in_soft_cap()
         decision = decision_engine.decide(
             classified_task=classified_task,
             request_model=request.model,
             metadata=request.metadata,
+            budget_soft_cap=soft_cap,
         )
         used_provider = decision.provider
         used_model = decision.model
@@ -288,10 +290,12 @@ class ChatService:
         messages_as_dict = [message.model_dump() for message in request.messages]
 
         classified_task = classifier.classify(messages_as_dict)
+        soft_cap = await is_in_soft_cap()
         decision = decision_engine.decide(
             classified_task=classified_task,
             request_model=request.model,
             metadata=request.metadata,
+            budget_soft_cap=soft_cap,
         )
 
         # `provider="manual"` is the DecisionEngine's signal that the caller
