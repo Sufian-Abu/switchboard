@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-143%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-175%20passing-brightgreen.svg)](#testing)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](#quick-start)
 
 **Automatically send the right request to the right model at the right cost** — with awareness of provider health, remaining budget, and the channel it came from. Drop it in front of your app, send OpenAI-shaped requests, and stop juggling provider keys, spreadsheets, and rate limits.
@@ -114,10 +114,89 @@ Tag requests at the source (`metadata.channel: whatsapp`); Switchboard matches o
 
 The Playground's **Compare all** button fans your prompt across every priced model in parallel and renders the answers in a grid with cost, latency, and tokens. Cheapest tinted green, fastest blue. Decide which model to trust based on data instead of vendor marketing.
 
+### AI Cost Autopilot — keep critical traffic premium, degrade the rest
+
+The hard `MAX_DAILY_USD` cap returns 503s when hit; the soft cap (e.g. 80%) reorders fallback chains cheapest-first to stretch the budget. Add `immune_to_soft_cap: true` to the rules you never want to degrade — work Slack, production paging, etc. Everything else automatically drops to a cheaper model as you approach the cap.
+
+```yaml
+- name: work_slack_premium     # critical — never auto-degrade
+  when: { metadata.channel: slack, metadata.workspace: work }
+  use:  { provider: openai, model: gpt-4o }
+  immune_to_soft_cap: true
+
+- name: casual_chat            # non-critical — soft-cap engages cheapest-first
+  when: { task_type: general_chat }
+  use:       { provider: openai, model: gpt-4o-mini }
+  fallbacks: [{ provider: ollama, model: llama3.2:1b }]
+```
+
+### Sticky A/B cohorts — the same user always sees the same model
+
+Random per-request cohort picks contaminate A/B comparisons because returning users bounce between variants. Switchboard hashes a `metadata.user_id` (or `session_id`) deterministically into the cohort weight range so each user is locked to their cohort for the duration of the test — without server-side state.
+
+```yaml
+- name: rewrite_ab
+  when: { task_type: rewrite }
+  split:
+    - { name: groq_small,    provider: groq,   model: llama-3.1-8b-instant, weight: 80 }
+    - { name: gemini_flash,  provider: gemini, model: gemini-2.5-flash,    weight: 20 }
+```
+
+```bash
+# Same user → same cohort every time
+curl -d '{"messages":[...], "metadata": {"user_id": "alice"}}' /v1/chat/completions
+```
+
+### Prompt Risk Guard — detect PII / medical / legal / financial prompts
+
+A v1 detector for the prompts that need different handling: PII regex (SSN, credit card, email, phone, IP, leaked API keys) plus word-list heuristics for advice-seeking medical / legal / financial intent. When triggered, the semantic cache is bypassed unconditionally and the matched rule's `safe_provider` takes over routing (if configured).
+
+```yaml
+- name: general_with_safety_net
+  when: { task_type: general_chat }
+  use:  { provider: openai, model: gpt-4o }
+  safe_provider: ollama              # risky prompts go local, not cloud
+  safe_model: llama3.2:1b
+```
+
+Every response gets a `risk` block when the guard is on:
+
+```jsonc
+"risk": {
+  "triggered": true,
+  "categories": ["pii", "medical"],
+  "patterns_matched": ["ssn"],
+  "actions": ["cache_bypassed", "rerouted_to_safe_provider"]
+}
+```
+
+### Routing Replay — backtest config changes against historical traffic
+
+Built a new routing config and want to know what it would have cost over the last 30 days? Replay reads the request log, re-runs the decision engine against the candidate config (no upstream calls, no tokens spent), and tells you exactly:
+
+```bash
+python -m router.replay --config configs/recipes/cost-aggressive.yaml
+```
+
+```text
+Replayed 28 of 28 requests
+Total: $0.001077 → $0.000097  (-91.0%, $-0.000979)
+
+By task type:
+  rewrite                 $0.000043 → $0.000000  (-100.0%)
+  structured_extraction   $0.001021 → $0.000097  (-90.5%)
+
+Provider distribution shifts:
+  groq    23 → 13  (-10)
+  ollama   4 → 15  (+11)
+```
+
+CI-friendly JSON output via `--json`. Decide whether to ship the new rules based on data, not a guess.
+
 ---
 
 > [!IMPORTANT]
-> **The headline:** *"Automatically send the right request to the right model at the right cost — with awareness of provider health, remaining budget, and the channel it came from."*
+> **The headline:** *"Automatically send the right request to the right model at the right cost — with awareness of provider health, remaining budget, and the channel it came from. Plus pre-flight cost preview, A/B cohorts that stay sticky, PII / medical / legal detection, and the ability to backtest any config change against your actual traffic."*
 
 ## Architecture
 
@@ -396,6 +475,7 @@ These are off by default for local development. Set them before exposing Switchb
 | `MAX_DAILY_USD` | `0` | Spend circuit-breaker. When the day's recorded USD spend crosses this, `/v1/chat/{completions,compare}` returns 503 until the next UTC day. `0` disables the cap. |
 | `DAILY_SOFT_CAP_PCT` | `0.0` | Soft cap as a fraction of `MAX_DAILY_USD` (e.g. `0.8`). When today's spend crosses it, fallback chains are reordered cheapest-first automatically. Active only when `MAX_DAILY_USD > 0`. |
 | `ALLOW_CLIENT_MODEL_OVERRIDE` | `false` | When `false`, requests carrying a `model:` field are rejected with 400. The routing policy decides the model. |
+| `ENABLE_RISK_GUARD` | `false` | When `true`, scan every prompt for PII / medical / legal / financial intent. Risky prompts bypass the semantic cache; if the matched rule has `safe_provider:`, traffic reroutes there. Response gets a `risk` block. |
 
 ## API surface
 
@@ -407,6 +487,7 @@ These are off by default for local development. Set them before exposing Switchb
 | `POST /v1/chat/route` | Show the routing decision without calling any provider |
 | `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
 | `GET  /v1/health/providers` | Per-provider rolling-window health (error rate, p50/p95 latency, band) |
+| _CLI_ `python -m router.replay --config X` | Backtest a candidate routing config against the logged historical traffic |
 | `GET  /metrics` | Prometheus metrics (requires the `metrics` extra) |
 | `GET  /health` | Liveness probe |
 | `GET  /` | Redirect to the dashboard |
@@ -416,8 +497,9 @@ These are off by default for local development. Set them before exposing Switchb
 ## Testing
 
 ```bash
-pytest                       # 143 tests, ~1.6s, fully offline
+pytest                       # 175 tests, ~2s, fully offline
 python -m router.eval --cases evals/example.yaml
+python -m router.replay --config configs/recipes/cost-aggressive.yaml   # backtest a config
 ```
 
 The suite uses FastAPI's `TestClient` plus the `MockProvider` — no API keys needed, no network calls, no flakes. The eval harness loads YAML test cases (`prompt` → expected task type + provider/model) and exits with a CI-friendly status code.
@@ -493,11 +575,13 @@ So inside Claude Code you can say *"summarize this 5KB file using the cheap rout
 
 Short list, in priority order. Each item reinforces the core promise — *right model, right cost, right health, right channel* — without becoming a different product.
 
+- **Real eval dataset** (`evals/realistic.yaml`) covering 50–100 diverse prompts so "smart routing" stops being self-assessed.
 - **Anthropic provider** (same shape as the other OpenAI-compatible ones).
-- **Per-request latency in `request_log`** so the A/B page can render p50/p95 columns.
-- **Redis-backed shared semantic cache + provider health tracker** so multiple replicas share state.
+- **Per-request latency in `request_log`** so the A/B page can render p50/p95 columns and Replay can model latency too.
+- **Redis-backed shared health tracker + semantic cache** so multiple replicas share state.
 - **Per-tenant cache scoping + auth** for multi-user / SaaS use.
 - **Dashboard polish** — filtering on the Requests page, CSV export, budget-alert webhooks.
+- **Risk Guard v2** — small NER model behind the same interface for higher recall on advice-seeking prompts.
 - **Exact tokenizers** (`tiktoken` etc.) as an optional `tokenizers` extra so cost preview is exact for billing.
 - **Plugin system** so the community can add providers without forking.
 - **TypeScript SDK** to lower integration friction.
