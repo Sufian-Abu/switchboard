@@ -2,10 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-143%20passing-brightgreen.svg)](#testing)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](#quick-start)
 
-A cost-aware LLM router with a built-in dashboard. Drop it in front of your app, send OpenAI-shaped requests, and stop worrying about which provider to use, what it costs, or what to do when one of them goes down.
+**Automatically send the right request to the right model at the right cost** — with awareness of provider health, remaining budget, and the channel it came from. Drop it in front of your app, send OpenAI-shaped requests, and stop juggling provider keys, spreadsheets, and rate limits.
 
 ---
 
@@ -73,15 +73,17 @@ PYTHONPATH=../../packages:./ uvicorn app.main:app --reload
 
 ## How a request flows
 
-Rules live in `configs/config.yaml`. Here's a small slice:
+Rules live in `configs/config.yaml`. A small slice showing several of the differentiating features:
 
 ```yaml
 routing:
   rules:
+    # Plain task-based routing
     - name: rewrite_to_groq_small
       when: { task_type: rewrite }
       use:  { provider: groq, model: llama-3.1-8b-instant }
 
+    # Cost-aware: reorder by USD, cap per-call, opt into cache
     - name: reasoning_cheapest
       when: { task_type: reasoning }
       use:       { provider: groq, model: llama-3.3-70b-versatile }
@@ -90,6 +92,21 @@ routing:
       prefer: cheapest
       max_cost_per_call: 0.01
       cache: true
+
+    # Health-aware: skip Gemini when its rolling stats go degraded
+    - name: summarize_with_health_check
+      when: { task_type: summarization }
+      use:       { provider: gemini, model: gemini-2.5-flash }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+      avoid_if_health: degraded
+
+    # A/B test 80/20 across two providers
+    - name: rewrite_ab_test
+      when: { task_type: rewrite }
+      split:
+        - { name: groq_small,  provider: groq,   model: llama-3.1-8b-instant, weight: 80 }
+        - { name: gemini_flash, provider: gemini, model: gemini-2.5-flash,    weight: 20 }
 ```
 
 Send a request:
@@ -136,10 +153,11 @@ A few helpers built on the same engine:
 
 | Page | What's there |
 |---|---|
-| `/dashboard` | KPIs, cost-by-provider chart, task-type breakdown, recent calls |
+| `/dashboard` | Burn-rate card (when MAX_DAILY_USD set), provider-health grid (healthy/degraded/unhealthy bands), task-type breakdown, cost-by-provider chart, recent calls |
 | `/dashboard/playground` | Live cost preview per model as you type, then run with streaming, then a **Compare all** button |
-| `/dashboard/requests` | Full audit log: request ID, provider, model, tokens, USD, attempts |
-| `/dashboard/cost` | 7-day spend, daily chart, by-provider and by-model tables |
+| `/dashboard/requests` | Full audit log: request ID, provider, model, tokens, USD, attempts. **Click any row** to see the verbatim routing reason. |
+| `/dashboard/cost` | 7-day spend, daily chart, by-provider, by-model, and by-channel tables |
+| `/dashboard/ab` | A/B cohort comparison for rules using `split:` — count, tokens, avg/total cost, success rate side by side |
 
 Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build step. Open by default for local dev; set `DASHBOARD_AUTH=true` to lock it down — see the [security settings](#security-relevant-settings) below.
 
@@ -154,6 +172,12 @@ Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build
 **Fallback chain.** Each rule can list fallback `(provider, model)` pairs after `use:`. On retryable errors (rate limit, 5xx, network) the next candidate is tried. 4xx errors aren't retried — a malformed request won't succeed elsewhere either. Streaming doesn't fall back mid-response (that would corrupt output).
 
 **Cost-aware routing.** Set `prefer: cheapest` on a rule and candidates are reordered by expected USD per call before selection. Set `max_cost_per_call: N` and any candidate above the cap is excluded; if every candidate is excluded the engine moves on to the next rule. Default is *fail closed* — candidates with no pricing entry are excluded under a cap, unless you opt in with `allow_unknown_pricing_under_cap: true` (use only for trusted free providers like local Ollama).
+
+**Provider health-based routing.** Each successful and failed provider call feeds a rolling 5-minute window of error rate and p95 latency. A rule with `avoid_if_health: degraded` or `unhealthy` will *skip* candidates in those bands before sending — not just retry-around them per request. No other OSS LLM router does this preemptively.
+
+**Budget intelligence.** `MAX_DAILY_USD` is the hard cap (503s when reached). `DAILY_SOFT_CAP_PCT` is the *soft* cap: when today's spend crosses the threshold (e.g. 80%), the engine automatically reorders every rule's fallback chain cheapest-first to stretch the budget instead of going dark.
+
+**A/B testing.** A rule can `split:` traffic across named cohorts with weights. The cohort is recorded on every request, and `/dashboard/ab` shows side-by-side cost, success rate, and token totals so you can pick a winner before committing.
 
 **Semantic cache.** Per-rule opt-in via `cache: true`. Embeds the prompt and looks for one above a cosine-similarity threshold (default 0.97) for the same model. Hit → return cached response, no provider call. In-memory, LRU eviction at 256 entries. **Don't enable for legal / medical / financial / per-user PII workloads** — there's no per-tenant scoping yet. See [docs/security.md](docs/security.md).
 
@@ -184,6 +208,7 @@ These are off by default for local development. Set them before exposing Switchb
 | `API_TOKEN` | _(empty)_ | When set, requires `Authorization: Bearer <token>` on `/v1/*`. |
 | `DASHBOARD_AUTH` | `false` | When `true` (and `API_TOKEN` is set), `/dashboard/*` and `/v1/cache/stats` also require auth. Browsers can use HTTP Basic auth — password is the API token. |
 | `MAX_DAILY_USD` | `0` | Spend circuit-breaker. When the day's recorded USD spend crosses this, `/v1/chat/{completions,compare}` returns 503 until the next UTC day. `0` disables the cap. |
+| `DAILY_SOFT_CAP_PCT` | `0.0` | Soft cap as a fraction of `MAX_DAILY_USD` (e.g. `0.8`). When today's spend crosses it, fallback chains are reordered cheapest-first automatically. Active only when `MAX_DAILY_USD > 0`. |
 | `ALLOW_CLIENT_MODEL_OVERRIDE` | `false` | When `false`, requests carrying a `model:` field are rejected with 400. The routing policy decides the model. |
 
 ## API surface
@@ -195,6 +220,7 @@ These are off by default for local development. Set them before exposing Switchb
 | `POST /v1/chat/compare` | Run a prompt across N models in parallel; returns each answer + cost + latency |
 | `POST /v1/chat/route` | Show the routing decision without calling any provider |
 | `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
+| `GET  /v1/health/providers` | Per-provider rolling-window health (error rate, p50/p95 latency, band) |
 | `GET  /metrics` | Prometheus metrics (requires the `metrics` extra) |
 | `GET  /health` | Liveness probe |
 | `GET  /` | Redirect to the dashboard |
@@ -204,7 +230,7 @@ These are off by default for local development. Set them before exposing Switchb
 ## Testing
 
 ```bash
-pytest                       # 120 tests, ~1.3s, fully offline
+pytest                       # 143 tests, ~1.6s, fully offline
 python -m router.eval --cases evals/example.yaml
 ```
 
@@ -279,15 +305,29 @@ So inside Claude Code you can say *"summarize this 5KB file using the cheap rout
 
 ## Roadmap
 
-Short list, in priority order:
+Short list, in priority order. Each item reinforces the core promise — *right model, right cost, right health, right channel* — without becoming a different product.
 
-- **Redis-backed shared semantic cache** so multiple replicas can share state.
-- **Per-tenant cache scoping + auth** for multi-user / SaaS use. The single bearer token model isn't enough.
 - **Anthropic provider** (same shape as the other OpenAI-compatible ones).
-- **Dashboard polish** — filtering on the Requests page, CSV export, latency p50/p95/p99 columns, budget-alert webhooks.
-- **Exact tokenizers** (`tiktoken` for OpenAI/Groq, `transformers` for others) as an optional `tokenizers` extra so the cost preview is exact for billing.
+- **Per-request latency in `request_log`** so the A/B page can render p50/p95 columns.
+- **Redis-backed shared semantic cache + provider health tracker** so multiple replicas share state.
+- **Per-tenant cache scoping + auth** for multi-user / SaaS use.
+- **Dashboard polish** — filtering on the Requests page, CSV export, budget-alert webhooks.
+- **Exact tokenizers** (`tiktoken` etc.) as an optional `tokenizers` extra so cost preview is exact for billing.
 - **Plugin system** so the community can add providers without forking.
 - **TypeScript SDK** to lower integration friction.
+
+## Explicitly out of scope
+
+These adjacent features would turn Switchboard into a different product. We deliberately don't build them so the project stays sharp:
+
+- **Fine-tuning management** — use OpenAI / Together / Replicate's own tooling.
+- **Vector databases / RAG platform** — Pinecone, Weaviate, Chroma, pgvector exist for this.
+- **Full agent framework / workflow builder** — LangChain, LlamaIndex, n8n are dedicated tools.
+- **Enterprise SSO / SCIM / SOC2 dashboards** — these belong in a commercial wrapper, not the core router.
+- **Multi-tenant SaaS hosting** — Switchboard is self-hosted by design. The community can build a hosted offering on top.
+- **Prompt management / version control / playground-as-a-service** — Langfuse, Helicone, PromptLayer already do this well.
+
+If your need is one of these, you're better served by the dedicated tools. Switchboard composes with them — sit it between your app and the provider, and use whichever observability/RAG/agent layer you prefer on top.
 
 ## Contributing
 
