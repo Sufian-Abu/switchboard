@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     classifier_keywords_path: str = "configs/classifier_keywords.yaml"
     classifier_prototypes_path: str = "configs/classifier_prototypes.yaml"
 
+    # Prompt Risk Guard — detect PII / medical / legal / financial-sensitive
+    # prompts and bypass cache; optionally re-route to a rule's safe_provider.
+    # See packages/router/risk.py for what's detected.
+    enable_risk_guard: bool = False
+
     # Opt-in: semantic cache. Same embeddings dep applies. Threshold is 0.97 because
     # 0.95 has been seen to merge prompts that diverge in intent (negation, named
     # entities, formatting). Tighten further or use `cache_strict: true` on the rule

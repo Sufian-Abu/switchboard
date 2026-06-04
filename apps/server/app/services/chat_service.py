@@ -51,9 +51,11 @@ from app.schemas.chat import (
     ChatCompletionResponse,
     ChatCompletionUsage,
     CostInfo,
+    RiskInfo,
     RoutingAttempt,
     RoutingInfo,
 )
+from router import risk as risk_guard
 from router.errors import ProviderError
 from router.logger import get_logger
 from router.schemas import ProviderResponse
@@ -294,11 +296,21 @@ class ChatService:
 
         classified_task = classifier.classify(messages_as_dict)
         soft_cap = await is_in_soft_cap()
+
+        # Prompt Risk Guard runs before routing so it can influence the decision
+        # (override to safe_provider) and after-the-fact effects (cache bypass).
+        risk_assessment = (
+            risk_guard.assess_messages(messages_as_dict)
+            if settings.enable_risk_guard
+            else risk_guard.RiskAssessment(triggered=False, categories=(), patterns_matched=())
+        )
+
         decision = decision_engine.decide(
             classified_task=classified_task,
             request_model=request.model,
             metadata=request.metadata,
             budget_soft_cap=soft_cap,
+            risk_triggered=risk_assessment.triggered,
         )
 
         # `provider="manual"` is the DecisionEngine's signal that the caller
@@ -321,8 +333,17 @@ class ChatService:
         last_error: ProviderError | None = None
         cache_hit = False
 
-        # Semantic cache lookup (only when the matched rule opts in).
-        sem_cache = get_semantic_cache() if decision.cache_enabled else None
+        # Track which Risk Guard actions we took for the response body.
+        risk_actions: list[str] = []
+        if risk_assessment.triggered:
+            risk_actions.append("cache_bypassed")
+            if "risk override" in decision.reason:
+                risk_actions.append("rerouted_to_safe_provider")
+
+        # Semantic cache lookup. Skipped entirely when the prompt tripped the
+        # Risk Guard — never serve a cached response for a sensitive request.
+        cache_eligible = decision.cache_enabled and not risk_assessment.triggered
+        sem_cache = get_semantic_cache() if cache_eligible else None
         prompt_for_cache = messages_as_dict[-1].get("content", "") if messages_as_dict else ""
         if sem_cache is not None and prompt_for_cache:
             cached = sem_cache.lookup(prompt_for_cache, primary_model)
@@ -501,4 +522,14 @@ class ChatService:
                 attempts=attempts,
             ),
             cost=cost,
+            risk=(
+                RiskInfo(
+                    triggered=risk_assessment.triggered,
+                    categories=list(risk_assessment.categories),
+                    patterns_matched=list(risk_assessment.patterns_matched),
+                    actions=risk_actions,
+                )
+                if settings.enable_risk_guard
+                else None
+            ),
         )

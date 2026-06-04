@@ -172,6 +172,28 @@ class ChatEstimateResponse(BaseModel):
     most_expensive: ModelEstimate | None = None
 
 
+class RiskInfo(BaseModel):
+    """Prompt Risk Guard assessment + what we did about it.
+
+    Present only when `ENABLE_RISK_GUARD=true`. Fields are empty / `triggered=false`
+    when the prompt scanned clean.
+    """
+
+    triggered: bool = False
+    categories: list[str] = Field(
+        default_factory=list,
+        description="Categories that fired: pii, medical, legal, financial.",
+    )
+    patterns_matched: list[str] = Field(
+        default_factory=list,
+        description="Specific PII pattern names that matched (ssn, credit_card, …).",
+    )
+    actions: list[str] = Field(
+        default_factory=list,
+        description="What the guard did: cache_bypassed, rerouted_to_safe_provider.",
+    )
+
+
 class CostInfo(BaseModel):
     """USD cost estimate for the served call (only for the successful attempt).
 
@@ -201,4 +223,8 @@ class ChatCompletionResponse(BaseModel):
     cost: CostInfo = Field(
         default_factory=lambda: CostInfo(),
         description="USD cost estimate for the successful provider call.",
+    )
+    risk: RiskInfo | None = Field(
+        default=None,
+        description="Prompt Risk Guard assessment when ENABLE_RISK_GUARD=true.",
     )

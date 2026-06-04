@@ -64,6 +64,7 @@ class DecisionEngine:
         request_model: str | None = None,
         metadata: dict[str, Any] | None = None,
         budget_soft_cap: bool = False,
+        risk_triggered: bool = False,
     ) -> RoutingDecision:
         if request_model:
             return RoutingDecision(
@@ -78,6 +79,13 @@ class DecisionEngine:
             when = rule.get("when", {}) or {}
             if not self.matching.matches(when, classified_task.task_type, metadata):
                 continue
+
+            # Risk Guard override comes before split / health / cost — when a
+            # risky prompt hits a rule with a safe_provider, that takes over.
+            if risk_triggered:
+                safe = self._risk_safe_decision(rule, classified_task)
+                if safe is not None:
+                    return safe
 
             sticky_key = self._sticky_key_from_metadata(metadata)
             cohort: CohortChoice | None = self.split.pick(rule, sticky_key=sticky_key)
@@ -137,6 +145,28 @@ class DecisionEngine:
             task_type=task_type,
             fallbacks=fallbacks,
             cache_enabled=bool(rule.get("cache", False)),
+        )
+
+    def _risk_safe_decision(
+        self,
+        rule: dict,
+        classified_task: ClassifiedTask,
+    ) -> RoutingDecision | None:
+        """If the rule has `safe_provider`/`safe_model`, route there for risky prompts."""
+        safe_p = rule.get("safe_provider")
+        safe_m = rule.get("safe_model")
+        if not safe_p or not safe_m:
+            return None
+        return RoutingDecision(
+            provider=safe_p,
+            model=safe_m,
+            reason=(
+                f"Matched routing rule: {rule.get('name', 'unnamed_rule')} | "
+                f"risk override → safe_provider"
+            ),
+            task_type=classified_task.task_type,
+            fallbacks=[],
+            cache_enabled=False,  # never cache risky prompts
         )
 
     def _cohort_decision(
