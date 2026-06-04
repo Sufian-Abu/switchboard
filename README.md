@@ -33,6 +33,9 @@ The reason isn't that the problem is hard. The reason is that the existing tools
 
 What's missing is the thing in the middle. Something that looks at the request and decides what kind of task it is, picks a provider from a YAML file you actually control, falls back when one provider rate-limits you, and shows you, in real time, what each call cost and what each candidate model *would have* cost. That's what this is.
 
+<img width="1149" height="964" alt="Screenshot 2026-06-04 at 11 30 24 PM" src="https://github.com/user-attachments/assets/ac4d7164-6354-4ca2-bd8d-48a531d0d745" />
+
+
 ## What's different
 
 > [!TIP]
