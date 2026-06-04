@@ -1,123 +1,45 @@
-"""Decision engine.
+"""Decision engine — a thin coordinator over the routing policies.
 
-Translates a `ClassifiedTask` + optional request metadata into a concrete
-`RoutingDecision` (provider + model + fallback chain) by consulting the YAML
-routing config.
-
-`when:` clauses support two key shapes today:
-
-  - `task_type: <str>` — match the classified task type.
-  - `metadata.<field>: <value>` — match a field in the request's `metadata`
-    block. Used by upstream integrations (e.g. OpenClaw forwards
-    `metadata.channel: whatsapp`) to do per-channel / per-tenant routing.
-
-Multiple keys in the same `when:` are ANDed. A rule with no `when:` keys
-matches everything (acts as a catch-all). A rule whose required
-`metadata.foo` field isn't in the incoming request simply doesn't match,
-and the engine continues scanning.
+Translates a `ClassifiedTask` + request metadata into a concrete
+`RoutingDecision` (provider + model + fallback chain) by running the
+incoming request through a fixed pipeline of policies. Each policy lives in
+`router.policies.*` and handles one concern; adding a new concern is a
+matter of dropping in another policy step rather than growing this file.
 
 Resolution order:
-  1. If the client explicitly passed `model`, short-circuit to `provider="manual"`.
-  2. Otherwise, scan `routing.rules[*]` and return the first match.
-     The rule's `use` + `fallbacks` form a candidate chain; if the rule sets
-     a preference (`prefer: cheapest`) or `max_cost_per_call`, the chain is
-     reordered/filtered before returning.
-  3. If a matched rule is fully filtered out by `max_cost_per_call`, the
-     engine continues scanning subsequent rules.
-  4. Otherwise, fall back to `default.{provider,model}` in the config.
+  1. Client-supplied `model:` short-circuit (provider="manual").
+  2. For each rule, in YAML order:
+       a. MatchingPolicy — does `when:` match this request?
+       b. SplitPolicy    — if `split:` present, pick a cohort and return.
+       c. HealthPolicy   — drop candidates whose health is at/below the rule's
+                           `avoid_if_health:` threshold.
+       d. BudgetPolicy   — under soft cap, force cheapest-first across the
+                           chain unless the rule sets `immune_to_soft_cap: true`.
+       e. CostPolicy     — apply `prefer:` / `max_cost_per_call:` to the
+                           filtered chain.
+       f. If the chain is non-empty, return a RoutingDecision.
+  3. Default route (`default.{provider,model}` in the config).
 """
 from __future__ import annotations
 
-import random
 from typing import Any
 
 from router.costing import CostEngine
-from router.health import HealthBand, ProviderHealthTracker
-from router.preference import PreferenceSpec, select_chain
+from router.health import ProviderHealthTracker
+from router.policies import (
+    BudgetPolicy,
+    CohortChoice,
+    CostPolicy,
+    HealthPolicy,
+    MatchingPolicy,
+    SplitPolicy,
+)
+from router.preference import PreferenceSpec
 from router.schemas import ClassifiedTask, RoutingDecision
 
 
-_METADATA_PREFIX = "metadata."
-
-
-def _pick_split_cohort(rule: dict, split: Any) -> tuple[str, str, str]:
-    """Weighted random pick of one cohort from a rule's `split:` block.
-
-    The block can be either:
-        split: { cohort_a: 80, cohort_b: 20 }   # named cohorts, weights sum to anything
-    where each cohort entry has `provider`, `model` (and optional `name`)
-    OR the long form:
-        split:
-          - { name: cohort_a, provider: groq, model: ..., weight: 80 }
-          - { name: cohort_b, provider: gemini, model: ..., weight: 20 }
-
-    Returns (provider, model, cohort_label).
-    """
-    rule_name = rule.get("name", "unnamed_rule")
-    if not isinstance(split, list):
-        raise ValueError(
-            f"Rule {rule_name!r} `split:` must be a list of cohort entries, "
-            f"got {type(split).__name__}."
-        )
-    if not split:
-        raise ValueError(f"Rule {rule_name!r} `split:` is empty.")
-
-    cohorts: list[tuple[str, str, str, float]] = []  # (name, provider, model, weight)
-    for i, entry in enumerate(split):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Rule {rule_name!r} split[{i}] must be a mapping.")
-        name = entry.get("name") or f"cohort_{i}"
-        provider = entry.get("provider")
-        model = entry.get("model")
-        weight = entry.get("weight", 1.0)
-        if not provider or not model:
-            raise ValueError(
-                f"Rule {rule_name!r} split[{i}] must have `provider` and `model`."
-            )
-        try:
-            weight_f = float(weight)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Rule {rule_name!r} split[{i}] `weight` must be a number, got {weight!r}."
-            ) from exc
-        if weight_f <= 0:
-            raise ValueError(
-                f"Rule {rule_name!r} split[{i}] `weight` must be > 0, got {weight_f}."
-            )
-        cohorts.append((name, provider, model, weight_f))
-
-    names = [c[0] for c in cohorts]
-    weights = [c[3] for c in cohorts]
-    chosen_name = random.choices(names, weights=weights, k=1)[0]
-    chosen = next(c for c in cohorts if c[0] == chosen_name)
-    return chosen[1], chosen[2], chosen[0]
-
-
-def _when_matches(
-    when: dict, task_type: str, metadata: dict[str, Any] | None
-) -> bool:
-    """Return True iff every key/value in `when:` is satisfied by the request."""
-    meta = metadata or {}
-    for key, expected in when.items():
-        if key == "task_type":
-            if task_type != expected:
-                return False
-        elif isinstance(key, str) and key.startswith(_METADATA_PREFIX):
-            field = key[len(_METADATA_PREFIX):]
-            actual = meta.get(field)
-            if actual != expected:
-                return False
-        else:
-            # Unknown condition key — fail closed. Forces typos to be
-            # noticed instead of silently matching everything.
-            return False
-    return True
-
-
 class DecisionEngine:
-    """Reads YAML routing rules and picks a provider+model per request."""
-
-    _VALID_HEALTH_THRESHOLDS: tuple[HealthBand, ...] = ("degraded", "unhealthy")
+    """Routes a classified task to a provider/model + fallback chain."""
 
     def __init__(
         self,
@@ -126,24 +48,15 @@ class DecisionEngine:
         health_tracker: ProviderHealthTracker | None = None,
     ) -> None:
         self.config = config
-        self.cost_engine = cost_engine or CostEngine(pricing={})
-        # Optional. When None, `avoid_if_health:` rule clauses are no-ops.
+        cost_engine = cost_engine or CostEngine(pricing={})
+        self.matching = MatchingPolicy()
+        self.split = SplitPolicy()
+        self.health = HealthPolicy(health_tracker)
+        self.budget = BudgetPolicy()
+        self.cost = CostPolicy(cost_engine)
+        # Kept for backwards compatibility with tests that read it directly.
+        self.cost_engine = cost_engine
         self.health_tracker = health_tracker
-
-    def _filter_by_health(
-        self,
-        candidates: list[tuple[str, str]],
-        threshold: HealthBand | None,
-    ) -> list[tuple[str, str]]:
-        """Drop candidates whose health is at or beyond the rule's threshold."""
-        if threshold is None or self.health_tracker is None:
-            return candidates
-        kept: list[tuple[str, str]] = []
-        for provider, model in candidates:
-            snap = self.health_tracker.snapshot(provider)
-            if not snap.is_avoidable(threshold):
-                kept.append((provider, model))
-        return kept
 
     def decide(
         self,
@@ -163,92 +76,116 @@ class DecisionEngine:
         rules = self.config.get("routing", {}).get("rules", [])
         for rule in rules:
             when = rule.get("when", {}) or {}
-            if not _when_matches(when, classified_task.task_type, metadata):
+            if not self.matching.matches(when, classified_task.task_type, metadata):
                 continue
 
-            # A/B split mode: pick one candidate by weighted random. No
-            # fallback chain — we want clean cohort attribution, even if it
-            # means a single-attempt failure on a rare provider hiccup.
-            split = rule.get("split")
-            cohort_label: str | None = None
-            if split is not None:
-                provider, model, cohort_label = _pick_split_cohort(rule, split)
-                rule_reason_extra = f" | A/B cohort '{cohort_label}' selected"
-                return RoutingDecision(
-                    provider=provider,
-                    model=model,
-                    reason=f"Matched routing rule: {rule.get('name', 'unnamed_rule')}{rule_reason_extra}",
-                    task_type=classified_task.task_type,
-                    fallbacks=[],
-                    cache_enabled=bool(rule.get("cache", False)),
-                    cohort=cohort_label,
-                )
+            sticky_key = self._sticky_key_from_metadata(metadata)
+            cohort: CohortChoice | None = self.split.pick(rule, sticky_key=sticky_key)
+            if cohort is not None:
+                return self._cohort_decision(rule, cohort, classified_task)
 
-            use = rule.get("use") or {}
-            fallbacks_raw = rule.get("fallbacks") or []
-            candidates: list[tuple[str, str]] = [(use["provider"], use["model"])]
-            candidates.extend((fb["provider"], fb["model"]) for fb in fallbacks_raw)
-
-            # Health-based avoidance: drop providers whose rolling-window stats
-            # cross the rule's threshold before any other filtering runs.
-            health_threshold_raw = rule.get("avoid_if_health")
-            health_threshold: HealthBand | None = None
-            if health_threshold_raw is not None:
-                if health_threshold_raw not in self._VALID_HEALTH_THRESHOLDS:
-                    # Typo guard: raise rather than silently ignore.
-                    raise ValueError(
-                        f"Rule {rule.get('name', '?')!r} has invalid `avoid_if_health`: "
-                        f"{health_threshold_raw!r} (must be one of {self._VALID_HEALTH_THRESHOLDS})"
-                    )
-                health_threshold = health_threshold_raw  # type: ignore[assignment]
-            candidates = self._filter_by_health(candidates, health_threshold)
-            if not candidates:
-                # All candidates avoided due to health — fall through to next rule.
-                continue
-
-            spec = PreferenceSpec.from_rule(rule)
-            # When the daily soft-cap is active, force cheapest-first across
-            # all candidates regardless of the rule's normal preference. The
-            # rule still gets honoured for fallback identity — just reordered.
-            if budget_soft_cap and len(candidates) > 1:
-                spec = PreferenceSpec(
-                    policy="cheapest",
-                    max_cost_per_call=spec.max_cost_per_call,
-                    assume_max_tokens=spec.assume_max_tokens,
-                    assume_prompt_tokens=spec.assume_prompt_tokens,
-                    allow_unknown_pricing_under_cap=spec.allow_unknown_pricing_under_cap,
-                )
-            chain = select_chain(candidates, spec, self.cost_engine)
-            if not chain:
-                # Every candidate exceeded `max_cost_per_call` — try next rule.
-                continue
-
-            primary_provider, primary_model = chain[0]
-            fallbacks = chain[1:]
-            base_reason = f"Matched routing rule: {rule.get('name', 'unnamed_rule')}"
-            if health_threshold is not None:
-                base_reason += f" | filtered by avoid_if_health={health_threshold}"
-            if budget_soft_cap and len(candidates) > 1:
-                base_reason += " | reordered cheapest-first (daily soft-cap engaged)"
-            elif spec.policy == "cheapest":
-                base_reason += " | reordered by cheapest-first preference"
-            if spec.max_cost_per_call is not None:
-                base_reason += f" | filtered by max_cost_per_call=${spec.max_cost_per_call}"
-
-            return RoutingDecision(
-                provider=primary_provider,
-                model=primary_model,
-                reason=base_reason,
+            decision = self._decide_for_rule(
+                rule=rule,
                 task_type=classified_task.task_type,
-                fallbacks=fallbacks,
-                cache_enabled=bool(rule.get("cache", False)),
+                budget_soft_cap=budget_soft_cap,
             )
+            if decision is not None:
+                return decision
+            # Decision skipped (everything filtered out) — try the next rule.
 
-        default_provider = self.config.get("default", {}).get("provider", "mock")
-        default_model = self.config.get("default", {}).get("model", "mock-default-model")
+        # Default route.
+        default = self.config.get("default", {})
         return RoutingDecision(
-            provider=default_provider,
-            model=default_model,
+            provider=default.get("provider", "mock"),
+            model=default.get("model", "mock-default-model"),
             reason="No matching rule found. Using default route.",
             task_type=classified_task.task_type,
         )
+
+    # --- private helpers ----------------------------------------------------
+
+    def _decide_for_rule(
+        self,
+        rule: dict,
+        task_type: str,
+        budget_soft_cap: bool,
+    ) -> RoutingDecision | None:
+        use = rule.get("use") or {}
+        fallbacks_raw = rule.get("fallbacks") or []
+        candidates: list[tuple[str, str]] = [(use["provider"], use["model"])]
+        candidates.extend((fb["provider"], fb["model"]) for fb in fallbacks_raw)
+
+        health_threshold = self.health.threshold_from_rule(rule)
+        candidates = self.health.filter(candidates, health_threshold)
+        if not candidates:
+            return None
+
+        spec = PreferenceSpec.from_rule(rule)
+        spec, budget_override = self.budget.adjust(
+            rule, spec, budget_soft_cap, len(candidates)
+        )
+        chain = self.cost.select(candidates, spec)
+        if not chain:
+            return None
+
+        primary_provider, primary_model = chain[0]
+        fallbacks = chain[1:]
+        return RoutingDecision(
+            provider=primary_provider,
+            model=primary_model,
+            reason=self._build_reason(rule, spec, health_threshold, budget_override),
+            task_type=task_type,
+            fallbacks=fallbacks,
+            cache_enabled=bool(rule.get("cache", False)),
+        )
+
+    def _cohort_decision(
+        self,
+        rule: dict,
+        cohort: CohortChoice,
+        classified_task: ClassifiedTask,
+    ) -> RoutingDecision:
+        reason = (
+            f"Matched routing rule: {rule.get('name', 'unnamed_rule')} | "
+            f"A/B cohort '{cohort.name}' selected"
+        )
+        if cohort.sticky:
+            reason += " (sticky)"
+        return RoutingDecision(
+            provider=cohort.provider,
+            model=cohort.model,
+            reason=reason,
+            task_type=classified_task.task_type,
+            fallbacks=[],
+            cache_enabled=bool(rule.get("cache", False)),
+            cohort=cohort.name,
+        )
+
+    def _build_reason(
+        self,
+        rule: dict,
+        spec: PreferenceSpec,
+        health_threshold: str | None,
+        budget_override: bool,
+    ) -> str:
+        reason = f"Matched routing rule: {rule.get('name', 'unnamed_rule')}"
+        if health_threshold is not None:
+            reason += f" | filtered by avoid_if_health={health_threshold}"
+        if budget_override:
+            reason += " | reordered cheapest-first (daily soft-cap engaged)"
+        elif spec.policy == "cheapest":
+            reason += " | reordered by cheapest-first preference"
+        if spec.max_cost_per_call is not None:
+            reason += f" | filtered by max_cost_per_call=${spec.max_cost_per_call}"
+        return reason
+
+    @staticmethod
+    def _sticky_key_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+        """Pull a stable identifier for sticky A/B cohorts. Preferred → fallback."""
+        if not metadata:
+            return None
+        for key in ("user_id", "user", "session_id", "session"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        return None

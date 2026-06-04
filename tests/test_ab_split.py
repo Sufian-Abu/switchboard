@@ -8,34 +8,37 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from router.costing import CostEngine
-from router.decision_engine import DecisionEngine, _pick_split_cohort
+from router.decision_engine import DecisionEngine
+from router.policies import SplitPolicy
 from router.schemas import ClassifiedTask
 
 
-def test_pick_split_cohort_respects_weights() -> None:
-    """A 100/0 split should always pick the first cohort."""
-    rule = {"name": "demo"}
-    split = [
-        {"name": "always", "provider": "groq", "model": "small", "weight": 100},
-        {"name": "never",  "provider": "gemini", "model": "flash", "weight": 0.0001},
-    ]
-    # Weight 0 isn't allowed; use a tiny positive instead. Run many trials
-    # to confirm the heavily-weighted side dominates.
-    chosen = [_pick_split_cohort(rule, split)[2] for _ in range(200)]
-    assert chosen.count("always") > 190  # ~100% dominant
+def test_split_policy_respects_weights() -> None:
+    """A 99.99/0.01 split should overwhelmingly pick the heavy side."""
+    policy = SplitPolicy()
+    rule = {
+        "name": "demo",
+        "split": [
+            {"name": "always", "provider": "groq", "model": "small", "weight": 9999},
+            {"name": "never",  "provider": "gemini", "model": "flash", "weight": 1},
+        ],
+    }
+    chosen = [policy.pick(rule).name for _ in range(200)]
+    assert chosen.count("always") > 190
 
 
-def test_pick_split_cohort_distributes_roughly() -> None:
-    rule = {"name": "demo"}
-    split = [
-        {"name": "a", "provider": "p", "model": "m", "weight": 50},
-        {"name": "b", "provider": "p", "model": "m", "weight": 50},
-    ]
-    # Seed RNG for stability.
+def test_split_policy_distributes_roughly() -> None:
+    policy = SplitPolicy()
+    rule = {
+        "name": "demo",
+        "split": [
+            {"name": "a", "provider": "p", "model": "m", "weight": 50},
+            {"name": "b", "provider": "p", "model": "m", "weight": 50},
+        ],
+    }
     random.seed(42)
-    chosen = [_pick_split_cohort(rule, split)[2] for _ in range(1000)]
+    chosen = [policy.pick(rule).name for _ in range(1000)]
     a_count = chosen.count("a")
-    # Roughly 50/50, allow generous slack.
     assert 400 < a_count < 600
 
 
@@ -65,18 +68,20 @@ def test_split_rule_returns_cohort_and_no_fallback() -> None:
 
 
 def test_split_rule_validation() -> None:
-    from router.decision_engine import _pick_split_cohort
+    policy = SplitPolicy()
 
-    rule = {"name": "demo"}
     with pytest.raises(ValueError, match="must be a list"):
-        _pick_split_cohort(rule, {"a": 80, "b": 20})  # dict, not list
+        policy.pick({"name": "demo", "split": {"a": 80, "b": 20}})
     with pytest.raises(ValueError, match="empty"):
-        _pick_split_cohort(rule, [])
+        policy.pick({"name": "demo", "split": []})
     with pytest.raises(ValueError, match="must have `provider`"):
-        _pick_split_cohort(rule, [{"name": "a", "weight": 1}])
+        policy.pick({"name": "demo", "split": [{"name": "a", "weight": 1}]})
     with pytest.raises(ValueError, match="must be > 0"):
-        _pick_split_cohort(
-            rule, [{"name": "a", "provider": "p", "model": "m", "weight": 0}]
+        policy.pick(
+            {
+                "name": "demo",
+                "split": [{"name": "a", "provider": "p", "model": "m", "weight": 0}],
+            }
         )
 
 
