@@ -11,7 +11,8 @@
 
 **Jump to:**
 [The problem](#the-problem) ·
-[What it does](#what-it-does) ·
+[What's different](#whats-different) ·
+[Architecture](#architecture) ·
 [Quick start](#quick-start) ·
 [How a request flows](#how-a-request-flows) ·
 [Dashboard](#the-dashboard) ·
@@ -32,11 +33,131 @@ The reason isn't that the problem is hard. The reason is that the tools for it p
 
 What's missing is the thing in the middle. Something that looks at the request and decides what kind of task it is, picks a provider from a YAML file you actually control, falls back when one provider rate-limits you, and shows you, in real time, what each call cost and what each candidate model *would have* cost. That's what this is.
 
-## What it does
+## What's different
 
-A request comes in on `POST /v1/chat/completions`. The classifier decides this is a `summarization` task. The decision engine reads `configs/config.yaml`, finds the rule for that task type, and picks a provider + model — plus an ordered list of fallbacks if the primary fails. If the rule says `prefer: cheapest`, the candidates get reordered by expected USD cost before picking the primary. The response comes back in OpenAI's normal shape with two extra blocks: `routing` (what was chosen and why) and `cost` (actual USD spent). A row goes into a local SQLite database; the dashboard reads from it.
+> [!TIP]
+> Switchboard isn't another OpenAI proxy. It's a routing **control plane** with five capabilities that no other open-source LLM router has all of together — pre-flight cost preview, provider health-based avoidance, graduated budget degradation, A/B testing, and a built-in dashboard with every decision visible.
+
+| Capability | **Switchboard** | LiteLLM | OpenRouter | Portkey | Helicone |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Self-hosted (OSS, MIT) | ✓ | ✓ | ✗ hosted | partial | ✓ |
+| Task-aware classification | ✓ | ✗ | ✗ | ✗ | ✗ |
+| YAML routing rules you control | ✓ | partial | ✗ | partial | ✗ |
+| **Pre-flight cost preview** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **Per-response `routing` + `cost` block** | ✓ | ✗ | partial | ✗ | ✗ |
+| **Provider health-based preemptive avoidance** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **Graduated budget degradation (soft cap)** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **A/B testing with cohort comparison** | ✓ | ✗ | ✗ | partial | ✗ |
+| Channel / metadata-aware routing | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Side-by-side "Compare all models" UI | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Built-in dashboard | ✓ | ✗ | hosted only | partial | ✓ |
+| Local Ollama first-class | ✓ | ✓ | ✗ | ✗ | ✗ |
+| Streaming with routing metadata | ✓ | partial | ✓ | ✗ | ✗ |
+| MCP server for Claude Code / Cursor | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Eval harness (CI-friendly) | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Prometheus `/metrics` | ✓ | partial | ✗ | partial | ✓ |
+
+> [!IMPORTANT]
+> **The headline claim:** *"Automatically send the right request to the right model at the right cost — with awareness of provider health, remaining budget, and the channel it came from."* No other OSS LLM router can credibly say that.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    Client["Your app / Claude Code / OpenClaw"]:::client
+
+    subgraph SB["Switchboard"]
+        direction TB
+        Auth["Bearer auth · Budget circuit-breaker"]:::guard
+        Classifier["Task classifier<br/><i>keywords + optional embeddings</i>"]:::engine
+        Decider["Decision engine<br/><i>rules · cost · health · A/B · channel</i>"]:::engine
+        Cache[("Semantic<br/>cache")]:::store
+        Log[("Request log<br/>SQLite / Postgres")]:::store
+        Dash["Dashboard<br/>+ /metrics"]:::ui
+    end
+
+    Groq["Groq"]:::provider
+    Gemini["Gemini"]:::provider
+    OpenAI["OpenAI"]:::provider
+    Ollama["Ollama<br/><i>local</i>"]:::providerLocal
+
+    Client --> Auth
+    Auth --> Classifier
+    Classifier --> Decider
+    Decider -.cache hit.-> Cache
+    Decider --> Groq
+    Decider --> Gemini
+    Decider --> OpenAI
+    Decider --> Ollama
+    Decider --> Log
+    Log --> Dash
+    Cache --> Decider
+
+    classDef client fill:#3b82f6,stroke:#1e40af,color:#fff,stroke-width:2px
+    classDef guard fill:#f59e0b,stroke:#b45309,color:#fff,stroke-width:2px
+    classDef engine fill:#8b5cf6,stroke:#5b21b6,color:#fff,stroke-width:2px
+    classDef store fill:#64748b,stroke:#334155,color:#fff,stroke-width:2px
+    classDef ui fill:#ec4899,stroke:#9d174d,color:#fff,stroke-width:2px
+    classDef provider fill:#10b981,stroke:#065f46,color:#fff,stroke-width:2px
+    classDef providerLocal fill:#0ea5e9,stroke:#0369a1,color:#fff,stroke-width:2px
+```
+
+Five layers, each replaceable:
+
+| Layer | What it does | What it knows |
+|---|---|---|
+| **Auth · Budget gate** | Rejects requests when `API_TOKEN` is wrong or `MAX_DAILY_USD` is hit | Settings only |
+| **Classifier** | Labels the prompt with a task type | YAML keyword rules + optional embedding prototypes |
+| **Decision engine** | Picks a primary provider/model and an ordered fallback chain | Routing rules, cost engine, health tracker, A/B splits, channel metadata |
+| **Provider** | Calls the upstream LLM (or local Ollama) and returns a normalised `ProviderResponse` | Just the API contract |
+| **Log · Cache · Metrics** | Persists every call, optionally caches by semantic similarity, exposes Prometheus | Read-only from the rest |
+
+## What it does (request lifecycle)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Switchboard
+    participant Classifier
+    participant DE as Decision engine
+    participant Health as Health tracker
+    participant Provider
+    participant DB as Request log
+
+    Client->>Switchboard: POST /v1/chat/completions
+    Note over Switchboard: Bearer auth · daily-spend check
+
+    Switchboard->>Classifier: classify(messages)
+    Classifier-->>Switchboard: task_type = "rewrite"
+
+    Switchboard->>DE: decide(task_type, metadata)
+    DE->>Health: snapshot per candidate
+    Health-->>DE: bands (healthy / degraded / unhealthy)
+    Note over DE: filter by health · reorder by cost ·<br/>apply max_cost_per_call · soft-cap aware
+    DE-->>Switchboard: provider + model + fallback chain
+
+    loop until success or chain exhausted
+        Switchboard->>Provider: chat()
+        alt success
+            Provider-->>Switchboard: response + tokens
+            Switchboard->>Health: record(success, latency)
+        else retryable error
+            Provider-->>Switchboard: 429 / 5xx / network
+            Switchboard->>Health: record(failure, latency)
+        end
+    end
+
+    Switchboard->>DB: write row (channel, reason, cohort, USD)
+    Switchboard-->>Client: OpenAI shape + routing + cost blocks
+```
+
+Every block on this diagram is configurable in `configs/config.yaml`. Nothing is hardcoded.
 
 ## Quick start
+
+> [!NOTE]
+> Zero API keys required to get going. The Mock provider runs offline and the dashboard works immediately. Add real provider keys when you want to route real traffic.
 
 ### Docker (one command)
 
@@ -179,9 +300,15 @@ Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build
 
 **A/B testing.** A rule can `split:` traffic across named cohorts with weights. The cohort is recorded on every request, and `/dashboard/ab` shows side-by-side cost, success rate, and token totals so you can pick a winner before committing.
 
-**Semantic cache.** Per-rule opt-in via `cache: true`. Embeds the prompt and looks for one above a cosine-similarity threshold (default 0.97) for the same model. Hit → return cached response, no provider call. In-memory, LRU eviction at 256 entries. **Don't enable for legal / medical / financial / per-user PII workloads** — there's no per-tenant scoping yet. See [docs/security.md](docs/security.md).
+**Semantic cache.** Per-rule opt-in via `cache: true`. Embeds the prompt and looks for one above a cosine-similarity threshold (default 0.97) for the same model. Hit → return cached response, no provider call. In-memory, LRU eviction at 256 entries.
+
+> [!CAUTION]
+> Do **not** enable the semantic cache for legal / medical / financial / per-user PII workloads. There's no per-tenant scoping yet, so one user's response can be served to another user with a similar prompt. See [docs/security.md](docs/security.md).
 
 **Auth.** Off by default. Set `API_TOKEN` and `/v1/*` paths require `Authorization: Bearer <token>`. Set `DASHBOARD_AUTH=true` (with `API_TOKEN`) and `/dashboard/*` plus `/v1/cache/stats` are also locked down. Browsers can authenticate with HTTP Basic auth — password is the API token — so the native browser credential prompt works.
+
+> [!WARNING]
+> The dashboard is open by default for local development. Before exposing the host beyond `localhost`, set `API_TOKEN` and `DASHBOARD_AUTH=true`. See [docs/security.md](docs/security.md) for the full deployment posture.
 
 **Spend circuit-breaker.** Set `MAX_DAILY_USD=N` and the day's recorded spend is checked before each `/v1/chat/{completions,compare}` call. When the cap is hit the endpoint returns 503 with a structured error until the next UTC day. Defends against runaway-cost incidents.
 
