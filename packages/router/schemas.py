@@ -24,6 +24,7 @@ class RoutingDecision:
     `fallbacks` is the ordered list of `(provider, model)` pairs to try if the
     primary fails with a retryable error. Empty list means no fallback.
     `cache_enabled` is True when the matched rule sets `cache: true`.
+    `cohort` is the A/B-test cohort label when the rule used `split:`, else None.
     """
 
     provider: str
@@ -32,6 +33,7 @@ class RoutingDecision:
     task_type: str
     fallbacks: list[tuple[str, str]] = field(default_factory=list)
     cache_enabled: bool = False
+    cohort: str | None = None
 
 
 @dataclass

@@ -231,6 +231,88 @@ async def overview(window_hours: int = 24) -> dict:
     }
 
 
+async def ab_cohort_comparison(window_days: int = 7) -> dict:
+    """Per-cohort comparison: count, total cost, avg cost, avg latency proxy
+    (we don't store latency per call yet, so this reports request-count and
+    cost only — latency p50/p95 will land when we add per-request latency)."""
+    cutoff = _utc_now() - timedelta(days=window_days)
+    sm = get_sessionmaker()
+
+    async with sm() as session:
+        q = (
+            select(
+                RequestLog.cohort,
+                RequestLog.selected_provider,
+                RequestLog.selected_model,
+                func.count(RequestLog.id),
+                func.coalesce(func.sum(RequestLog.estimated_usd), 0.0),
+                func.coalesce(func.avg(RequestLog.estimated_usd), 0.0),
+                func.sum(
+                    func.coalesce(RequestLog.prompt_tokens, 0)
+                    + func.coalesce(RequestLog.completion_tokens, 0)
+                ),
+                func.sum(
+                    func.iif(RequestLog.status == "succeeded", 1, 0)
+                ) if False else None,  # placeholder; computed below in Python for portability
+            )
+            .where(RequestLog.ts >= cutoff)
+            .where(RequestLog.cohort.isnot(None))
+            .group_by(RequestLog.cohort, RequestLog.selected_provider, RequestLog.selected_model)
+            .order_by(func.coalesce(func.sum(RequestLog.estimated_usd), 0.0).desc())
+        )
+        rows = (await session.execute(q)).all()
+
+        # Compute success counts in a second pass — portable across dialects.
+        success_q = (
+            select(
+                RequestLog.cohort,
+                func.count(RequestLog.id),
+            )
+            .where(RequestLog.ts >= cutoff)
+            .where(RequestLog.cohort.isnot(None))
+            .where(RequestLog.status == "succeeded")
+            .group_by(RequestLog.cohort)
+        )
+        success_map = {
+            r[0]: int(r[1])
+            for r in (await session.execute(success_q)).all()
+        }
+        total_q = (
+            select(
+                RequestLog.cohort,
+                func.count(RequestLog.id),
+            )
+            .where(RequestLog.ts >= cutoff)
+            .where(RequestLog.cohort.isnot(None))
+            .group_by(RequestLog.cohort)
+        )
+        total_map = {
+            r[0]: int(r[1])
+            for r in (await session.execute(total_q)).all()
+        }
+
+    cohorts = []
+    for row in rows:
+        cohort, provider, model, count, total_usd, avg_usd, total_tokens, _ = row
+        succ = success_map.get(cohort, 0)
+        total = total_map.get(cohort, 0)
+        success_rate = (succ / total * 100.0) if total else 0.0
+        cohorts.append(
+            {
+                "cohort": cohort,
+                "provider": provider or "—",
+                "model": model or "—",
+                "count": int(count),
+                "total_usd": float(total_usd or 0.0),
+                "avg_usd": float(avg_usd or 0.0),
+                "total_tokens": int(total_tokens or 0),
+                "success_rate_pct": success_rate,
+            }
+        )
+
+    return {"window_days": window_days, "cohorts": cohorts}
+
+
 async def recent_requests(limit: int = 100) -> list[dict]:
     sm = get_sessionmaker()
     async with sm() as session:

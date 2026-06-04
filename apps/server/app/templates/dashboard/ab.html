@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}A/B comparison{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">A/B comparison · last {{ window_days }} days</h1>
+<p class="text-sm text-slate-500 mb-4">
+  Cohorts come from routing rules that use <code class="bg-slate-100 px-1">split:</code>.
+  Compare cost and success rate side-by-side to pick a winner before committing.
+</p>
+
+{% if cohorts | length == 0 %}
+<div class="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-500">
+  No A/B traffic logged. Add a <code class="bg-slate-100 px-1">split:</code> rule to <code class="bg-slate-100 px-1">configs/config.yaml</code> and send some requests.
+  <pre class="text-xs text-left bg-slate-100 mt-3 p-3 rounded overflow-x-auto">- name: rewrite_ab_test
+  when: { task_type: rewrite }
+  split:
+    - { name: groq_small, provider: groq, model: llama-3.1-8b-instant, weight: 80 }
+    - { name: gemini_flash, provider: gemini, model: gemini-2.5-flash, weight: 20 }</pre>
+</div>
+{% else %}
+
+<div class="bg-white border border-slate-200 rounded-xl p-4 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-500 border-b">
+        <th class="py-2">Cohort</th>
+        <th>Provider · Model</th>
+        <th class="text-right">Calls</th>
+        <th class="text-right">Tokens</th>
+        <th class="text-right">Avg cost</th>
+        <th class="text-right">Total USD</th>
+        <th class="text-right">Success rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in cohorts %}
+      <tr class="border-b last:border-0">
+        <td class="py-2 font-mono text-xs">{{ c.cohort }}</td>
+        <td>{{ c.provider }} · <span class="font-mono text-xs">{{ c.model }}</span></td>
+        <td class="text-right">{{ c.count }}</td>
+        <td class="text-right">{{ c.total_tokens }}</td>
+        <td class="text-right">${{ '%.6f' % c.avg_usd }}</td>
+        <td class="text-right">${{ '%.6f' % c.total_usd }}</td>
+        <td class="text-right">{{ '%.1f' % c.success_rate_pct }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="text-xs text-slate-400 mt-3">
+  Latency p50/p95 columns are on the roadmap — they need per-request latency
+  in the log first.
+</p>
+{% endif %}
+{% endblock %}

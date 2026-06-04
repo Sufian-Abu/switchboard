@@ -74,6 +74,7 @@ async def _write_log(
     error_message: str | None,
     channel: str | None = None,
     routing_reason: str | None = None,
+    cohort: str | None = None,
 ) -> None:
     """Write a single RequestLog row. Never fails the request — logs an error and moves on."""
     try:
@@ -97,6 +98,7 @@ async def _write_log(
                     error_message=error_message,
                     channel=channel,
                     routing_reason=routing_reason,
+                    cohort=cohort,
                 )
             )
             await session.commit()
@@ -275,6 +277,7 @@ class ChatService:
             error_message=error_message,
             channel=(request.metadata or {}).get("channel") if request.metadata else None,
             routing_reason=decision.reason,
+            cohort=decision.cohort,
         )
 
     async def create_completion(
@@ -421,6 +424,7 @@ class ChatService:
                 error_message=last_error.message,
                 channel=(request.metadata or {}).get("channel") if request.metadata else None,
                 routing_reason=decision.reason,
+                cohort=decision.cohort,
             )
             raise last_error
 
@@ -471,6 +475,7 @@ class ChatService:
             error_message=None,
             channel=(request.metadata or {}).get("channel") if request.metadata else None,
             routing_reason=final_reason,
+            cohort=decision.cohort,
         )
 
         return ChatCompletionResponse(

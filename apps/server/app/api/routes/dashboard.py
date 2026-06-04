@@ -36,6 +36,16 @@ async def dashboard_requests(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/dashboard/ab", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_ab(request: Request) -> HTMLResponse:
+    data = await dashboard_service.ab_cohort_comparison(window_days=7)
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard/ab.html",
+        context=data,
+    )
+
+
 @router.get("/dashboard/cost", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard_cost(request: Request) -> HTMLResponse:
     data = await dashboard_service.cost_breakdown(window_days=7)

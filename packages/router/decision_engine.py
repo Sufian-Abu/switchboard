@@ -28,6 +28,7 @@ Resolution order:
 """
 from __future__ import annotations
 
+import random
 from typing import Any
 
 from router.costing import CostEngine
@@ -37,6 +38,59 @@ from router.schemas import ClassifiedTask, RoutingDecision
 
 
 _METADATA_PREFIX = "metadata."
+
+
+def _pick_split_cohort(rule: dict, split: Any) -> tuple[str, str, str]:
+    """Weighted random pick of one cohort from a rule's `split:` block.
+
+    The block can be either:
+        split: { cohort_a: 80, cohort_b: 20 }   # named cohorts, weights sum to anything
+    where each cohort entry has `provider`, `model` (and optional `name`)
+    OR the long form:
+        split:
+          - { name: cohort_a, provider: groq, model: ..., weight: 80 }
+          - { name: cohort_b, provider: gemini, model: ..., weight: 20 }
+
+    Returns (provider, model, cohort_label).
+    """
+    rule_name = rule.get("name", "unnamed_rule")
+    if not isinstance(split, list):
+        raise ValueError(
+            f"Rule {rule_name!r} `split:` must be a list of cohort entries, "
+            f"got {type(split).__name__}."
+        )
+    if not split:
+        raise ValueError(f"Rule {rule_name!r} `split:` is empty.")
+
+    cohorts: list[tuple[str, str, str, float]] = []  # (name, provider, model, weight)
+    for i, entry in enumerate(split):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Rule {rule_name!r} split[{i}] must be a mapping.")
+        name = entry.get("name") or f"cohort_{i}"
+        provider = entry.get("provider")
+        model = entry.get("model")
+        weight = entry.get("weight", 1.0)
+        if not provider or not model:
+            raise ValueError(
+                f"Rule {rule_name!r} split[{i}] must have `provider` and `model`."
+            )
+        try:
+            weight_f = float(weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Rule {rule_name!r} split[{i}] `weight` must be a number, got {weight!r}."
+            ) from exc
+        if weight_f <= 0:
+            raise ValueError(
+                f"Rule {rule_name!r} split[{i}] `weight` must be > 0, got {weight_f}."
+            )
+        cohorts.append((name, provider, model, weight_f))
+
+    names = [c[0] for c in cohorts]
+    weights = [c[3] for c in cohorts]
+    chosen_name = random.choices(names, weights=weights, k=1)[0]
+    chosen = next(c for c in cohorts if c[0] == chosen_name)
+    return chosen[1], chosen[2], chosen[0]
 
 
 def _when_matches(
@@ -111,6 +165,24 @@ class DecisionEngine:
             when = rule.get("when", {}) or {}
             if not _when_matches(when, classified_task.task_type, metadata):
                 continue
+
+            # A/B split mode: pick one candidate by weighted random. No
+            # fallback chain — we want clean cohort attribution, even if it
+            # means a single-attempt failure on a rare provider hiccup.
+            split = rule.get("split")
+            cohort_label: str | None = None
+            if split is not None:
+                provider, model, cohort_label = _pick_split_cohort(rule, split)
+                rule_reason_extra = f" | A/B cohort '{cohort_label}' selected"
+                return RoutingDecision(
+                    provider=provider,
+                    model=model,
+                    reason=f"Matched routing rule: {rule.get('name', 'unnamed_rule')}{rule_reason_extra}",
+                    task_type=classified_task.task_type,
+                    fallbacks=[],
+                    cache_enabled=bool(rule.get("cache", False)),
+                    cohort=cohort_label,
+                )
 
             use = rule.get("use") or {}
             fallbacks_raw = rule.get("fallbacks") or []

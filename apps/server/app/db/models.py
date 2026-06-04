@@ -42,3 +42,5 @@ class RequestLog(Base):
     # Human-readable "why was this provider chosen?" — surfaced verbatim on the
     # dashboard so users can trust the routing decision.
     routing_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # A/B cohort label when the matched rule used `split:`. NULL otherwise.
+    cohort: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
