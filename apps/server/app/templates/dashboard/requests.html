@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Requests{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Recent requests</h1>
+
+<div class="bg-white border border-slate-200 rounded-xl overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-500 border-b">
+        <th class="px-4 py-2">When (UTC)</th>
+        <th class="px-2">Request ID</th>
+        <th>Task</th>
+        <th>Provider</th>
+        <th>Model</th>
+        <th class="text-right">Prompt</th>
+        <th class="text-right">Completion</th>
+        <th class="text-right">USD</th>
+        <th>Status</th>
+        <th>Attempts</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-b last:border-0">
+        <td class="px-4 py-2 text-slate-500">{{ r.ts_display }}</td>
+        <td class="px-2 font-mono text-xs">{{ r.request_id }}</td>
+        <td>{{ r.task_type or '—' }}</td>
+        <td>{{ r.selected_provider or '—' }}</td>
+        <td class="font-mono text-xs">{{ r.selected_model or '—' }}</td>
+        <td class="text-right">{{ r.prompt_tokens if r.prompt_tokens is not none else '—' }}</td>
+        <td class="text-right">{{ r.completion_tokens if r.completion_tokens is not none else '—' }}</td>
+        <td class="text-right">{% if r.estimated_usd is not none %}${{ '%.6f' % r.estimated_usd }}{% else %}—{% endif %}</td>
+        <td>
+          {% if r.status == 'succeeded' %}
+          <span class="text-emerald-600 text-xs">ok</span>
+          {% else %}
+          <span class="text-red-600 text-xs">fail</span>
+          {% endif %}
+        </td>
+        <td class="text-right">{{ r.attempts_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if rows | length == 0 %}
+  <div class="p-6 text-center text-slate-500">No requests logged.</div>
+  {% endif %}
+</div>
+{% endblock %}

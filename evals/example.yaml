@@ -1,0 +1,48 @@
+# Example eval suite. Each case asserts a classifier/routing expectation against
+# the production config (configs/config.yaml). Run with:
+#   python -m router.eval --cases evals/example.yaml
+
+name: example_routing_quality
+
+cases:
+  - name: simple_rewrite
+    messages:
+      - role: user
+        content: Please rewrite this email politely.
+    expect:
+      task_type: rewrite
+      provider: groq
+      model_contains: llama-3
+
+  - name: summary_request
+    messages:
+      - role: user
+        content: Give me a short summary of the article.
+    expect:
+      task_type: summarization
+      provider_in: [gemini, groq, ollama]
+
+  - name: extraction_request
+    messages:
+      - role: user
+        content: Return JSON with the extract fields.
+    expect:
+      task_type: structured_extraction
+      provider: groq
+
+  - name: reasoning_uses_local_when_cheapest
+    messages:
+      - role: user
+        content: Discuss the architecture tradeoffs of REST vs gRPC.
+    expect:
+      task_type: reasoning
+      # With `prefer: cheapest`, Ollama (free) should beat Groq large.
+      provider: ollama
+
+  - name: generic_chat_falls_through
+    messages:
+      - role: user
+        content: hello there how are you
+    expect:
+      task_type: general_chat
+      provider: ollama

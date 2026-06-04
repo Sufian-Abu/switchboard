@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Overview · last {{ window_hours }}h</h1>
+
+{% if total_requests == 0 %}
+<div class="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-500">
+  No requests logged yet. Send a request to <code class="bg-slate-100 px-1">/v1/chat/completions</code> and refresh.
+</div>
+{% else %}
+
+<div class="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Requests</div>
+    <div class="text-2xl font-semibold">{{ total_requests }}</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Success rate</div>
+    <div class="text-2xl font-semibold">{{ '%.1f' % success_rate }}%</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Total cost (USD)</div>
+    <div class="text-2xl font-semibold">${{ '%.6f' % total_usd }}</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Tokens (in + out)</div>
+    <div class="text-2xl font-semibold">{{ total_tokens }}</div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <h2 class="font-semibold mb-3">Cost by provider</h2>
+    <canvas id="providerChart" height="180"></canvas>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <h2 class="font-semibold mb-3">Requests by task type</h2>
+    <canvas id="taskChart" height="180"></canvas>
+  </div>
+</div>
+
+<div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+  <h2 class="font-semibold mb-3">Cost breakdown</h2>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-500 border-b">
+        <th class="py-2">Provider</th><th>Model</th><th class="text-right">Requests</th>
+        <th class="text-right">Tokens</th><th class="text-right">USD</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in cost_rows %}
+      <tr class="border-b last:border-0">
+        <td class="py-2">{{ row.provider }}</td>
+        <td>{{ row.model }}</td>
+        <td class="text-right">{{ row.count }}</td>
+        <td class="text-right">{{ row.tokens }}</td>
+        <td class="text-right">${{ '%.6f' % row.usd }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="bg-white border border-slate-200 rounded-xl p-4">
+  <h2 class="font-semibold mb-3">Recent requests</h2>
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="text-left text-slate-500 border-b">
+        <th class="py-2">When</th><th>Task</th><th>Provider</th><th>Model</th>
+        <th class="text-right">Tokens</th><th class="text-right">USD</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recent %}
+      <tr class="border-b last:border-0">
+        <td class="py-2 text-slate-500">{{ r.ts_display }}</td>
+        <td>{{ r.task_type or '—' }}</td>
+        <td>{{ r.selected_provider or '—' }}</td>
+        <td class="font-mono text-xs">{{ r.selected_model or '—' }}</td>
+        <td class="text-right">{{ r.total_tokens if r.total_tokens is not none else '—' }}</td>
+        <td class="text-right">{% if r.estimated_usd is not none %}${{ '%.6f' % r.estimated_usd }}{% else %}—{% endif %}</td>
+        <td>
+          {% if r.status == 'succeeded' %}
+          <span class="text-emerald-600 text-xs">ok</span>
+          {% else %}
+          <span class="text-red-600 text-xs">fail</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const providerData = {{ provider_chart | tojson }};
+  new Chart(document.getElementById('providerChart'), {
+    type: 'bar',
+    data: {
+      labels: providerData.labels,
+      datasets: [{
+        label: 'USD',
+        data: providerData.values,
+        backgroundColor: '#3b82f6',
+      }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+
+  const taskData = {{ task_chart | tojson }};
+  new Chart(document.getElementById('taskChart'), {
+    type: 'doughnut',
+    data: { labels: taskData.labels, datasets: [{ data: taskData.values, backgroundColor: ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#64748b'] }] },
+  });
+</script>
+{% endif %}
+{% endblock %}

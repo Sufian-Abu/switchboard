@@ -1,0 +1,36 @@
+# Test-only routing config — never edit for production reasons.
+# Kept mock-only so the suite stays offline and deterministic.
+
+default:
+  provider: mock
+  model: mock-default-model
+
+routing:
+  rules:
+    - name: rewrite_to_mock
+      when:
+        task_type: rewrite
+      use:
+        provider: mock
+        model: mock-rewrite-model
+
+    - name: summarize_to_mock
+      when:
+        task_type: summarization
+      use:
+        provider: mock
+        model: mock-summary-model
+
+    - name: structured_extraction_to_mock
+      when:
+        task_type: structured_extraction
+      use:
+        provider: mock
+        model: mock-json-model
+
+    - name: reasoning_to_mock
+      when:
+        task_type: reasoning
+      use:
+        provider: mock
+        model: mock-premium-model

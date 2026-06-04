@@ -1,0 +1,13 @@
+# Test-only pricing. Numbers chosen to be small but unambiguous so the
+# cost math is easy to assert exactly.
+
+mock:
+  mock-rewrite-model:
+    input: 1.0
+    output: 2.0
+  mock-summary-model:
+    input: 3.0
+    output: 4.0
+  "*":
+    input: 0.5
+    output: 0.5

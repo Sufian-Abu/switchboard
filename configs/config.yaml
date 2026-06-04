@@ -1,0 +1,61 @@
+# Routing config.
+# Edit this file (no code changes) to change which provider/model handles each task type.
+# `default` is used when no rule matches. Casual chat falls through to `default`
+# so it doesn't burn API tokens.
+
+default:
+  provider: mock
+  model: mock-default-model
+
+routing:
+  rules:
+    # Simple text edits — small, fast, cheap Groq model.
+    - name: rewrite_to_groq_small
+      when:
+        task_type: rewrite
+      use:
+        provider: groq
+        model: llama-3.1-8b-instant
+
+    # Summaries — try Gemini first (cheapest). If it 429s or 5xx's, fall back to
+    # Groq, then to local Ollama as a last resort.
+    - name: summarize_with_fallback
+      when:
+        task_type: summarization
+      use:
+        provider: gemini
+        model: gemini-2.5-flash
+      fallbacks:
+        - {provider: groq, model: llama-3.1-8b-instant}
+        - {provider: ollama, model: llama3.2:1b}
+
+    # Structured / JSON extraction — Groq's big llama has solid JSON output and
+    # avoids Gemini's stricter free-tier quota.
+    - name: structured_extraction_to_groq_large
+      when:
+        task_type: structured_extraction
+      use:
+        provider: groq
+        model: llama-3.3-70b-versatile
+
+    # Reasoning — declare candidates with `prefer: cheapest`. The decision
+    # engine reorders them by expected USD per call before primary selection.
+    # Local Ollama is free → wins; Groq 70b is the cloud fallback.
+    - name: reasoning_cheapest
+      when:
+        task_type: reasoning
+      use:
+        provider: groq
+        model: llama-3.3-70b-versatile
+      fallbacks:
+        - {provider: ollama, model: llama3.2:1b}
+      prefer: cheapest
+
+    # General chat — local Ollama. Free, private, no API quota to worry about.
+    # First request after a 30s idle reloads the model into RAM (small latency hit).
+    - name: general_chat_to_ollama_local
+      when:
+        task_type: general_chat
+      use:
+        provider: ollama
+        model: llama3.2:1b

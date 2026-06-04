@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block title %}Playground{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">Playground</h1>
+<p class="text-sm text-slate-500 mb-4">Type a prompt — cost across models updates live. Hit Run to stream a real response.</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <!-- LEFT: input panel -->
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <label class="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Prompt</label>
+    <textarea id="prompt" rows="8"
+      class="w-full border border-slate-200 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+      placeholder="e.g. please rewrite this email politely&#10;     give me a short summary of …&#10;     return JSON with the user fields …&#10;     discuss the architecture tradeoffs of …"
+    >please rewrite this email politely</textarea>
+
+    <div class="grid grid-cols-2 gap-4 mt-3">
+      <div>
+        <label class="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Max output tokens</label>
+        <div class="flex items-center gap-2">
+          <input type="range" id="maxTokens" min="32" max="1024" step="32" value="256" class="flex-1">
+          <span id="maxTokensLabel" class="text-sm font-mono">256</span>
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Mode</label>
+        <label class="inline-flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" id="streamToggle" checked class="rounded">
+          Stream response (SSE)
+        </label>
+      </div>
+    </div>
+
+    <div class="mt-3" id="authRow" style="display:none">
+      <label class="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">API token</label>
+      <input id="apiToken" type="password" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Required when API_TOKEN is set on server" />
+    </div>
+
+    <div class="mt-4 flex gap-2">
+      <button id="runBtn"
+        class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg disabled:bg-slate-300">
+        Run
+      </button>
+      <button id="clearBtn"
+        class="border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg">
+        Clear
+      </button>
+      <span id="status" class="text-sm text-slate-500 self-center ml-2"></span>
+    </div>
+  </div>
+
+  <!-- RIGHT: live cost preview -->
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold">Cost preview</h2>
+      <span id="estimateMeta" class="text-xs text-slate-500"></span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-slate-500 border-b">
+            <th class="py-2">Provider</th>
+            <th>Model</th>
+            <th class="text-right">Min (USD)</th>
+            <th class="text-right">Max (USD)</th>
+          </tr>
+        </thead>
+        <tbody id="estimateRows">
+          <tr><td colspan="4" class="py-4 text-slate-400 text-center">Start typing…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-slate-400 mt-2">
+      <strong>Min</strong> = input tokens only (model returns nothing).
+      <strong>Max</strong> = input + your selected max output tokens.
+      Real cost lands between the two.
+    </p>
+  </div>
+</div>
+
+<!-- BOTTOM: response output -->
+<div class="bg-white border border-slate-200 rounded-xl p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="font-semibold">Response</h2>
+    <span id="streamIndicator" class="text-xs text-slate-500 hidden">● streaming…</span>
+  </div>
+  <pre id="response" class="whitespace-pre-wrap text-sm font-sans bg-slate-50 border border-slate-100 rounded-lg p-3 min-h-[120px]"></pre>
+
+  <div id="resultMeta" class="mt-4 hidden">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="border border-slate-200 rounded-lg p-3">
+        <h3 class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Routing decision</h3>
+        <div class="text-sm space-y-1">
+          <div>Task: <span id="metaTaskType" class="font-mono"></span></div>
+          <div>Selected: <span id="metaProvider" class="font-mono"></span> · <span id="metaModel" class="font-mono"></span></div>
+          <div class="text-slate-500">Reason: <span id="metaReason" class="italic"></span></div>
+          <div id="metaAttempts"></div>
+        </div>
+      </div>
+      <div class="border border-slate-200 rounded-lg p-3">
+        <h3 class="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Actual cost & tokens</h3>
+        <div class="text-sm space-y-1">
+          <div>Prompt tokens: <span id="metaPromptTokens" class="font-mono"></span></div>
+          <div>Completion tokens: <span id="metaCompletionTokens" class="font-mono"></span></div>
+          <div>Estimated USD: <span id="metaUsd" class="font-mono font-semibold"></span></div>
+          <div class="text-xs text-slate-400" id="metaRates"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const promptEl = document.getElementById('prompt');
+const maxTokensEl = document.getElementById('maxTokens');
+const maxTokensLabel = document.getElementById('maxTokensLabel');
+const streamToggle = document.getElementById('streamToggle');
+const runBtn = document.getElementById('runBtn');
+const clearBtn = document.getElementById('clearBtn');
+const responseEl = document.getElementById('response');
+const streamIndicator = document.getElementById('streamIndicator');
+const statusEl = document.getElementById('status');
+const estimateRowsEl = document.getElementById('estimateRows');
+const estimateMetaEl = document.getElementById('estimateMeta');
+const resultMetaEl = document.getElementById('resultMeta');
+const apiTokenEl = document.getElementById('apiToken');
+const authRow = document.getElementById('authRow');
+
+// Show the auth field only after a 401 — keeps the UI clean by default.
+function showAuthField() { authRow.style.display = 'block'; }
+function authHeaders() {
+  const tok = apiTokenEl.value.trim();
+  return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+}
+
+function fmtUsd(v) {
+  if (v === null || v === undefined) return '—';
+  if (v === 0) return '$0';
+  // Avoid scientific notation; show 8 decimal places for tiny amounts.
+  return '$' + Number(v).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+maxTokensEl.addEventListener('input', () => {
+  maxTokensLabel.textContent = maxTokensEl.value;
+  scheduleEstimate();
+});
+
+// --- Debounced cost preview ----------------------------------------------
+let estimateTimer = null;
+let estimateAbort = null;
+function scheduleEstimate() {
+  clearTimeout(estimateTimer);
+  estimateTimer = setTimeout(runEstimate, 400);
+}
+
+async function runEstimate() {
+  const messages = [{ role: 'user', content: promptEl.value }];
+  const body = {
+    messages,
+    assumed_max_tokens: parseInt(maxTokensEl.value, 10),
+  };
+  if (estimateAbort) estimateAbort.abort();
+  estimateAbort = new AbortController();
+  try {
+    const r = await fetch('/v1/chat/estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+      signal: estimateAbort.signal,
+    });
+    if (r.status === 401) { showAuthField(); return; }
+    if (!r.ok) throw new Error('estimate failed: ' + r.status);
+    const data = await r.json();
+    renderEstimate(data);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    estimateMetaEl.textContent = 'estimate failed: ' + e.message;
+  }
+}
+
+function renderEstimate(data) {
+  estimateMetaEl.textContent = `~${data.input_tokens_estimated} input tokens · assumes ${data.assumed_max_completion_tokens} output`;
+  const cheapest = data.cheapest ? `${data.cheapest.provider}/${data.cheapest.model}` : null;
+  const sorted = [...data.estimates].sort((a, b) =>
+    (a.estimated_usd_max ?? Infinity) - (b.estimated_usd_max ?? Infinity)
+  );
+  estimateRowsEl.innerHTML = sorted.map(e => {
+    const isCheapest = cheapest && `${e.provider}/${e.model}` === cheapest;
+    const cls = isCheapest ? 'bg-emerald-50' : '';
+    const tag = isCheapest ? '<span class="ml-1 text-xs text-emerald-700">cheapest</span>' : '';
+    return `<tr class="border-b last:border-0 ${cls}">
+      <td class="py-2">${e.provider}${tag}</td>
+      <td class="font-mono text-xs">${e.model}</td>
+      <td class="text-right">${e.pricing_known ? fmtUsd(e.estimated_usd_min) : '—'}</td>
+      <td class="text-right">${e.pricing_known ? fmtUsd(e.estimated_usd_max) : '<span class="text-slate-400">no price</span>'}</td>
+    </tr>`;
+  }).join('');
+}
+
+promptEl.addEventListener('input', scheduleEstimate);
+scheduleEstimate(); // initial fire with default prompt
+
+// --- Run (streaming or non-streaming) ------------------------------------
+clearBtn.addEventListener('click', () => {
+  responseEl.textContent = '';
+  resultMetaEl.classList.add('hidden');
+  statusEl.textContent = '';
+});
+
+runBtn.addEventListener('click', async () => {
+  runBtn.disabled = true;
+  responseEl.textContent = '';
+  resultMetaEl.classList.add('hidden');
+  statusEl.textContent = '';
+
+  const body = {
+    messages: [{ role: 'user', content: promptEl.value }],
+    max_tokens: parseInt(maxTokensEl.value, 10),
+    stream: streamToggle.checked,
+  };
+
+  const startedAt = performance.now();
+  try {
+    const r = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (r.status === 401) { showAuthField(); statusEl.textContent = 'auth required'; runBtn.disabled = false; return; }
+    if (!r.ok) {
+      const err = await r.text();
+      throw new Error(`HTTP ${r.status}: ${err}`);
+    }
+
+    if (body.stream) {
+      await consumeStream(r);
+    } else {
+      const data = await r.json();
+      responseEl.textContent = data.choices[0].message.content;
+      renderMeta({
+        routing: data.routing,
+        cost: data.cost,
+        usage: data.usage,
+      });
+    }
+    statusEl.textContent = `done in ${Math.round(performance.now() - startedAt)}ms`;
+  } catch (e) {
+    responseEl.textContent = '⚠ ' + e.message;
+  } finally {
+    runBtn.disabled = false;
+    streamIndicator.classList.add('hidden');
+  }
+});
+
+async function consumeStream(response) {
+  streamIndicator.classList.remove('hidden');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    // Split on SSE event boundary (blank line).
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const rawEvent = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      handleSseEvent(rawEvent);
+    }
+  }
+}
+
+function handleSseEvent(raw) {
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (payload === '[DONE]') return;
+    let evt;
+    try { evt = JSON.parse(payload); } catch { continue; }
+
+    // Router metadata event
+    if (evt.x_smart_router_meta) {
+      renderMeta(evt);
+      continue;
+    }
+    // Error event
+    if (evt.error) {
+      responseEl.textContent += '\n⚠ ' + evt.error.message;
+      continue;
+    }
+    // Content chunk: choices[0].delta.content
+    const delta = evt.choices?.[0]?.delta?.content;
+    if (delta) responseEl.textContent += delta;
+  }
+}
+
+function renderMeta(meta) {
+  const routing = meta.routing || {};
+  const cost = meta.cost || {};
+  const usage = meta.usage || {};
+  document.getElementById('metaTaskType').textContent = routing.task_type || '—';
+  document.getElementById('metaProvider').textContent = routing.selected_provider || '—';
+  document.getElementById('metaModel').textContent = routing.selected_model || '—';
+  document.getElementById('metaReason').textContent = routing.reason || '—';
+
+  const attempts = (routing.attempts || []).map(a => {
+    const icon = a.status === 'succeeded' ? '✓' : '✗';
+    const cls = a.status === 'succeeded' ? 'text-emerald-600' : 'text-red-600';
+    return `<span class="${cls}">${icon} ${a.provider}/${a.model}</span>`;
+  }).join(' → ');
+  document.getElementById('metaAttempts').innerHTML =
+    attempts ? '<div class="text-xs text-slate-500 mt-1">' + attempts + '</div>' : '';
+
+  document.getElementById('metaPromptTokens').textContent = usage.prompt_tokens ?? '—';
+  document.getElementById('metaCompletionTokens').textContent = usage.completion_tokens ?? '—';
+  document.getElementById('metaUsd').textContent = fmtUsd(cost.estimated_usd);
+  document.getElementById('metaRates').textContent =
+    cost.pricing_known ?
+      `rates: in $${cost.input_rate_per_million}/M · out $${cost.output_rate_per_million}/M` :
+      'pricing unknown for this model';
+
+  resultMetaEl.classList.remove('hidden');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,48 @@
+# Spin up Switchboard locally with one command.
+#
+#   docker compose up                          # router only
+#   docker compose --profile with-ollama up    # router + local Ollama
+#
+# Keys come from `apps/server/.env` (copy from `.env.example` and fill in).
+
+services:
+  router:
+    build: .
+    image: switchboard:latest
+    container_name: switchboard
+    ports:
+      - "8000:8000"
+    env_file:
+      - apps/server/.env
+    environment:
+      # When the Ollama profile is also running, route to the service name.
+      # If you only want to use a host-side Ollama, override OLLAMA_BASE_URL in .env.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - ./configs:/app/configs:ro     # routing + pricing — edit on disk, restart to apply
+      - router-data:/app/data         # persistent SQLite log
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false               # Ollama is in a profile; tolerate absence
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: switchboard-ollama
+    profiles: ["with-ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  router-data:
+  ollama-models:

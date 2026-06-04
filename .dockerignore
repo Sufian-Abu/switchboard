@@ -1,0 +1,47 @@
+# Source control
+.git/
+.gitignore
+.github/
+
+# Virtual envs / build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Test / lint cache
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Tests don't need to ship in the runtime image
+tests/
+
+# Local data — never embed the dev DB in the image
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets — env files must come from runtime (env_file or `-e`)
+.env
+.env.local
+.env.*.local
+apps/server/.env
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log

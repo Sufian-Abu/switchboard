@@ -1,0 +1,54 @@
+# Per-model pricing in USD per 1,000,000 tokens.
+# Format: <provider>.<model>.{input, output}
+# Use "*" as the model key for a provider-wide default (e.g. local Ollama = $0).
+#
+# Sources: provider pricing pages (last reviewed 2026-05).
+# These are estimates — verify against current rates before billing decisions.
+
+groq:
+  llama-3.1-8b-instant:
+    input: 0.05
+    output: 0.08
+  llama-3.3-70b-versatile:
+    input: 0.59
+    output: 0.79
+  mixtral-8x7b-32768:
+    input: 0.24
+    output: 0.24
+
+gemini:
+  gemini-2.5-flash:
+    input: 0.30
+    output: 2.50
+  gemini-2.0-flash:
+    input: 0.10
+    output: 0.40
+  gemini-2.0-flash-lite:
+    input: 0.075
+    output: 0.30
+  gemini-1.5-pro:
+    input: 1.25
+    output: 5.00
+
+openai:
+  gpt-4o:
+    input: 2.50
+    output: 10.00
+  gpt-4o-mini:
+    input: 0.15
+    output: 0.60
+  gpt-4.1:
+    input: 2.00
+    output: 8.00
+
+# Local — runs on user's machine. Cost in compute/electricity, not API spend.
+ollama:
+  "*":
+    input: 0.0
+    output: 0.0
+
+# Stub provider used in dev/tests.
+mock:
+  "*":
+    input: 0.0
+    output: 0.0

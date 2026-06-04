@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Cost{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Cost analytics · last {{ window_days }} days</h1>
+
+{% if total_usd == 0 and total_requests == 0 %}
+<div class="bg-white border border-slate-200 rounded-xl p-6 text-center text-slate-500">
+  No cost data yet — send some requests via <code class="bg-slate-100 px-1">/v1/chat/completions</code>.
+</div>
+{% else %}
+
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Total spend (window)</div>
+    <div class="text-2xl font-semibold">${{ '%.6f' % total_usd }}</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Avg / request</div>
+    <div class="text-2xl font-semibold">${{ '%.6f' % avg_usd }}</div>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <div class="text-xs text-slate-500 uppercase tracking-wide">Requests</div>
+    <div class="text-2xl font-semibold">{{ total_requests }}</div>
+  </div>
+</div>
+
+<div class="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+  <h2 class="font-semibold mb-3">Cost over time (daily)</h2>
+  <canvas id="dailyChart" height="120"></canvas>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <h2 class="font-semibold mb-3">By provider</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-slate-500 border-b">
+          <th class="py-2">Provider</th>
+          <th class="text-right">Calls</th>
+          <th class="text-right">USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in by_provider %}
+        <tr class="border-b last:border-0">
+          <td class="py-2">{{ row.provider }}</td>
+          <td class="text-right">{{ row.count }}</td>
+          <td class="text-right">${{ '%.6f' % row.usd }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <h2 class="font-semibold mb-3">By model</h2>
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-slate-500 border-b">
+          <th class="py-2">Model</th>
+          <th class="text-right">Calls</th>
+          <th class="text-right">USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in by_model %}
+        <tr class="border-b last:border-0">
+          <td class="py-2 font-mono text-xs">{{ row.model }}</td>
+          <td class="text-right">{{ row.count }}</td>
+          <td class="text-right">${{ '%.6f' % row.usd }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const dailyData = {{ daily_chart | tojson }};
+  new Chart(document.getElementById('dailyChart'), {
+    type: 'line',
+    data: {
+      labels: dailyData.labels,
+      datasets: [{
+        label: 'USD',
+        data: dailyData.values,
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59,130,246,0.15)',
+        fill: true,
+        tension: 0.25,
+      }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+</script>
+{% endif %}
+{% endblock %}
