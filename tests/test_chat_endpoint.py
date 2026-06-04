@@ -123,6 +123,34 @@ def test_cost_block_present_for_known_model(client: TestClient) -> None:
     assert cost["estimated_usd"] == pytest.approx(expected)
 
 
+def test_route_endpoint_returns_decision_without_calling_provider(client: TestClient) -> None:
+    """`/v1/chat/route` should return the routing decision but never invoke any provider."""
+    response = client.post(
+        "/v1/chat/route",
+        json={"messages": [{"role": "user", "content": "please rewrite this email"}]},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["task_type"] == "rewrite"
+    assert body["selected_provider"] == "mock"
+    assert body["selected_model"] == "mock-rewrite-model"
+    # The task reason and routing reason should both be populated.
+    assert body["task_reason"]
+    assert "rewrite_to_mock" in body["reason"]
+    assert isinstance(body["fallbacks"], list)
+    assert isinstance(body["cache_enabled"], bool)
+
+
+def test_route_endpoint_explicit_model_short_circuits(client: TestClient) -> None:
+    response = client.post(
+        "/v1/chat/route",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    body = response.json()
+    assert body["selected_provider"] == "manual"
+    assert body["selected_model"] == "gpt-4o-mini"
+
+
 def test_cost_block_uses_wildcard_for_unpriced_model(client: TestClient) -> None:
     """general_chat falls through to default mock-default-model, which hits the '*' rule."""
     response = client.post(

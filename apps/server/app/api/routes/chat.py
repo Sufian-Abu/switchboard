@@ -1,13 +1,40 @@
-"""POST /v1/chat/completions — OpenAI-compatible chat endpoint (streaming and non-streaming)."""
+"""POST /v1/chat/completions — OpenAI-compatible chat endpoint (streaming and non-streaming).
+Also POST /v1/chat/route — preview the routing decision without calling any provider.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.api.deps import get_classifier, get_decision_engine
+from app.schemas.chat import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatRouteRequest,
+    ChatRouteResponse,
+)
 from app.services.chat_service import ChatService
 
 router = APIRouter()
+
+
+@router.post("/v1/chat/route", response_model=ChatRouteResponse)
+async def chat_route(body: ChatRouteRequest) -> ChatRouteResponse:
+    """Classify the prompt and return the routing decision. No upstream call."""
+    classifier = get_classifier()
+    engine = get_decision_engine()
+    messages = [m.model_dump() for m in body.messages]
+    classified = classifier.classify(messages)
+    decision = engine.decide(classified_task=classified, request_model=body.model)
+    return ChatRouteResponse(
+        task_type=classified.task_type,
+        task_reason=classified.reason,
+        selected_provider=decision.provider,
+        selected_model=decision.model,
+        reason=decision.reason,
+        fallbacks=[{"provider": p, "model": m} for p, m in decision.fallbacks],
+        cache_enabled=decision.cache_enabled,
+    )
 
 
 @router.post("/v1/chat/completions")

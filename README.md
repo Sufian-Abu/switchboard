@@ -105,6 +105,10 @@ The response is OpenAI-shaped with two extra blocks:
 
 Want to know what something would cost before sending it? Hit `/v1/chat/estimate` with the same body and get a USD min/max per priced model. The dashboard's playground page does this live as you type.
 
+Want to *see every model's answer side by side*? `POST /v1/chat/compare` runs the same prompt against every priced model in parallel and returns each response with its cost and latency. The Playground page has a **Compare all** button that calls this and tints the cheapest answer green, the fastest blue.
+
+Want to debug a routing rule without burning tokens? `POST /v1/chat/route` returns the routing decision (task type, selected provider/model, fallback chain) with no upstream call.
+
 For streaming, add `"stream": true`. You get standard OpenAI SSE chunks followed by a `data: {"x_smart_router_meta": true, "routing": {...}, "cost": {...}}` event, then `data: [DONE]`. Standard OpenAI SDKs ignore the metadata event and keep working unchanged.
 
 ## The dashboard
@@ -146,6 +150,8 @@ Three files do all the work and are meant to be edited.
 |---|---|
 | `POST /v1/chat/completions` | OpenAI-compatible chat (JSON or SSE) |
 | `POST /v1/chat/estimate` | Cost preview across every priced model |
+| `POST /v1/chat/compare` | Run a prompt across N models in parallel; returns each answer + cost + latency |
+| `POST /v1/chat/route` | Show the routing decision without calling any provider |
 | `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
 | `GET  /health` | Liveness probe |
 | `GET  /` | Redirect to the dashboard |
@@ -160,6 +166,54 @@ python -m router.eval --cases evals/example.yaml
 ```
 
 The suite uses `TestClient` plus the `MockProvider` — no API keys needed. The eval harness loads YAML test cases (prompt → expected task type + provider/model) and exits with a CI-friendly status code.
+
+## Recipes
+
+Don't want to write a routing config from scratch? Drop one of the prebaked recipes in `configs/recipes/`:
+
+| Recipe | Wedge | Needs |
+|---|---|---|
+| `cost-aggressive.yaml` | Local Ollama for anything plausible; small Groq for the rest | Ollama running + `GROQ_API_KEY` |
+| `quality-first.yaml` | Premium model per task. No penny-pinching | `OPENAI_API_KEY` (preferred) or `GROQ_API_KEY` |
+| `local-first.yaml` | Try local first; cloud only on failure. Privacy / offline | Ollama running |
+| `balanced.yaml` | Small/cheap by default with automatic fallback to bigger models. Best starting point | `GROQ_API_KEY`, `GEMINI_API_KEY` |
+
+```bash
+cp configs/recipes/balanced.yaml configs/config.yaml
+# restart the server
+```
+
+## Use it from Claude Code / Cursor / Claude Desktop (MCP)
+
+Switchboard ships with an MCP server adapter, so AI coding assistants can offload sub-tasks to your router instead of always burning their own expensive tokens.
+
+```bash
+pip install -e ".[mcp]"   # adds the `mcp` extra
+```
+
+Then in Claude Desktop's `claude_desktop_config.json` (or the equivalent in Claude Code / Cursor):
+
+```json
+{
+  "mcpServers": {
+    "switchboard": {
+      "command": "switchboard-mcp",
+      "env": {
+        "SWITCHBOARD_BASE_URL": "http://localhost:8000",
+        "SWITCHBOARD_API_TOKEN": ""
+      }
+    }
+  }
+}
+```
+
+Switchboard must be running. The MCP server exposes three tools:
+
+- `route_chat(prompt, max_tokens)` — sends the prompt through Switchboard's routing.
+- `estimate_cost(prompt)` — preview cost across every priced model, no tokens spent.
+- `get_routing_decision(prompt)` — show what Switchboard would route this to, no upstream call.
+
+So inside Claude Code you can say *"summarize this 5KB file using the cheap router"* and the assistant calls `route_chat` instead of running summarization on its own expensive context.
 
 ## What it doesn't do (yet)
 

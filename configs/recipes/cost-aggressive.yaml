@@ -1,0 +1,40 @@
+# Cost-aggressive: cheapest path that still works.
+# Local Ollama for anything it can plausibly handle; small Groq for the rest.
+# Requires: Ollama running locally with llama3.2:1b pulled; GROQ_API_KEY.
+
+default:
+  provider: ollama
+  model: llama3.2:1b
+
+routing:
+  rules:
+    - name: rewrite_cheap
+      when: { task_type: rewrite }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: summarize_cheap
+      when: { task_type: summarization }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: structured_cheap
+      when: { task_type: structured_extraction }
+      # Local 1B isn't reliable enough for JSON; jump straight to Groq small.
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+
+    - name: reasoning_cheap_but_capable
+      when: { task_type: reasoning }
+      use:       { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: groq,   model: llama-3.3-70b-versatile }
+        - { provider: ollama, model: llama3.2:1b }
+      prefer: cheapest
+
+    - name: general_chat_local
+      when: { task_type: general_chat }
+      use:  { provider: ollama, model: llama3.2:1b }

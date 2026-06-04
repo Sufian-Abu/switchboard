@@ -1,0 +1,42 @@
+# Balanced: small/cheap by default, automatic fallback to bigger models when
+# the cheap one rate-limits. Best general-purpose starting point.
+# Requires: GROQ_API_KEY, GEMINI_API_KEY. Ollama optional but recommended.
+
+default:
+  provider: mock
+  model: mock-default-model
+
+routing:
+  rules:
+    - name: rewrite_to_groq_small
+      when: { task_type: rewrite }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: gemini, model: gemini-2.5-flash }
+        - { provider: ollama, model: llama3.2:1b }
+
+    - name: summarize_with_fallback
+      when: { task_type: summarization }
+      use:  { provider: gemini, model: gemini-2.5-flash }
+      fallbacks:
+        - { provider: groq,   model: llama-3.1-8b-instant }
+        - { provider: ollama, model: llama3.2:1b }
+
+    - name: structured_to_groq_large
+      when: { task_type: structured_extraction }
+      use:  { provider: groq, model: llama-3.3-70b-versatile }
+      fallbacks:
+        - { provider: gemini, model: gemini-2.5-flash }
+
+    - name: reasoning_cheapest
+      when: { task_type: reasoning }
+      use:       { provider: groq, model: llama-3.3-70b-versatile }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+      prefer: cheapest
+
+    - name: chat_to_ollama
+      when: { task_type: general_chat }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }

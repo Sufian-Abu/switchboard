@@ -11,17 +11,20 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Switchboard contributors" }]
 dependencies = [
-    "fastapi==0.115.0",
-    "uvicorn[standard]==0.30.6",
-    "pydantic==2.9.2",
-    "pydantic-settings==2.5.2",
-    "PyYAML==6.0.2",
-    "httpx==0.27.2",
-    "python-dotenv==1.0.1",
-    "SQLAlchemy[asyncio]==2.0.36",
-    "aiosqlite==0.20.0",
-    "Jinja2==3.1.4",
-    "greenlet==3.1.1",
+    # Loose lower bounds let optional extras like [mcp] pull newer versions
+    # without conflicts. Tight pins for reproducible installs live in
+    # `apps/server/requirements.txt`.
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "pydantic>=2.9.2",
+    "pydantic-settings>=2.5.2",
+    "PyYAML>=6.0.2",
+    "httpx>=0.27.2",
+    "python-dotenv>=1.0.1",
+    "SQLAlchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20.0",
+    "Jinja2>=3.1.4",
+    "greenlet>=3.1.1",
 ]
 
 [project.optional-dependencies]
@@ -34,14 +37,23 @@ dev = [
 embeddings = [
     "sentence-transformers>=3.0.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 
-# We intentionally do NOT auto-discover packages here. The repo uses a
-# multi-root layout (`apps/server/app` + `packages/router`) that does not
-# match the standard "src/" or flat conventions, so we rely on PYTHONPATH /
-# conftest.py for imports. Install with `pip install -e .` for editable
-# dependency management; the test suite resolves packages via `conftest.py`.
+[project.scripts]
+switchboard-mcp = "apps.mcp.server:main"
+
+# Multi-root layout: `apps/server/app` and `packages/router` aren't standard
+# `src/` or flat-layout packages, so we don't auto-discover. The MCP console
+# script (`switchboard-mcp`) needs `apps.mcp` to be importable as a package,
+# so we declare just that one to setuptools.
 [tool.setuptools]
-py-modules = []
+packages = ["apps", "apps.mcp"]
+
+[tool.setuptools.package-dir]
+"apps" = "apps"
+"apps.mcp" = "apps/mcp"
 
 [tool.pytest.ini_options]
 addopts = "-ra -q --strict-markers"

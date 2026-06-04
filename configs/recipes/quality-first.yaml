@@ -1,0 +1,38 @@
+# Quality-first: best available model per task. No cost penny-pinching.
+# Requires: OPENAI_API_KEY (preferred) or GROQ_API_KEY; GEMINI_API_KEY optional.
+
+default:
+  provider: openai
+  model: gpt-4o
+
+routing:
+  rules:
+    - name: rewrite_premium
+      when: { task_type: rewrite }
+      use:  { provider: openai, model: gpt-4o-mini }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    - name: summarize_premium
+      when: { task_type: summarization }
+      use:  { provider: gemini, model: gemini-2.5-flash }
+      fallbacks:
+        - { provider: openai, model: gpt-4o-mini }
+
+    - name: structured_premium
+      when: { task_type: structured_extraction }
+      use:  { provider: openai, model: gpt-4o }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    - name: reasoning_premium
+      when: { task_type: reasoning }
+      use:  { provider: openai, model: gpt-4o }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    - name: chat_premium
+      when: { task_type: general_chat }
+      use:  { provider: openai, model: gpt-4o-mini }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }

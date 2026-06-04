@@ -85,6 +85,63 @@ class ChatEstimateRequest(BaseModel):
     assumed_max_tokens: int = 256
 
 
+class ChatRouteRequest(BaseModel):
+    """Inbound body for `POST /v1/chat/route` — classify + decide, no provider call."""
+
+    messages: list[ChatMessage]
+    model: str | None = None
+
+
+class ChatRouteResponse(BaseModel):
+    """Routing decision for the given prompt — what Switchboard *would* do."""
+
+    task_type: str
+    task_reason: str
+    selected_provider: str
+    selected_model: str
+    reason: str
+    fallbacks: list[dict[str, str]]
+    cache_enabled: bool
+
+
+class ChatCompareRequest(BaseModel):
+    """Inbound body for `POST /v1/chat/compare` — run the same prompt across N models in parallel."""
+
+    messages: list[ChatMessage]
+    # Explicit list of (provider, model) to compare. If null, every priced model
+    # in the routing config is used.
+    candidates: list[dict[str, str]] | None = None
+    temperature: float = 0.7
+    max_tokens: int | None = 200
+
+
+class ComparisonResult(BaseModel):
+    """One model's response in a compare-all run."""
+
+    provider: str
+    model: str
+    status: Literal["succeeded", "failed"]
+    content: str | None = None
+    error: str | None = None
+    upstream_status: int | None = None
+    latency_ms: int
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    estimated_usd: float | None = None
+    input_rate_per_million: float | None = None
+    output_rate_per_million: float | None = None
+    pricing_known: bool = False
+
+
+class ChatCompareResponse(BaseModel):
+    """Response for `POST /v1/chat/compare`."""
+
+    results: list[ComparisonResult]
+    cheapest: ComparisonResult | None = None
+    fastest: ComparisonResult | None = None
+    total_estimated_usd: float
+
+
 class ModelEstimate(BaseModel):
     """Cost preview for one candidate provider+model."""
 

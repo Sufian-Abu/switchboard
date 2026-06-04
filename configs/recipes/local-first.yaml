@@ -1,0 +1,37 @@
+# Local-first: route everything to Ollama by default; cloud only on failure.
+# Best for: privacy, offline development, air-gapped environments.
+# Requires: Ollama running locally with llama3.2:1b pulled.
+
+default:
+  provider: ollama
+  model: llama3.2:1b
+
+routing:
+  rules:
+    - name: rewrite_local
+      when: { task_type: rewrite }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: summarize_local
+      when: { task_type: summarization }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: structured_local
+      when: { task_type: structured_extraction }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    - name: reasoning_local
+      when: { task_type: reasoning }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    - name: chat_local
+      when: { task_type: general_chat }
+      use:  { provider: ollama, model: llama3.2:1b }
