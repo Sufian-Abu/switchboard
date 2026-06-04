@@ -68,6 +68,37 @@ def load_pricing_config() -> dict[str, Any]:
     return data
 
 
+def load_classifier_keywords() -> list[tuple[str, tuple[str, ...], str]] | None:
+    """Load the keyword-classifier rule list from YAML, or None if the file is missing.
+
+    Returning None lets the classifier fall back to its in-code defaults.
+    """
+    keywords_path = _resolve(settings.classifier_keywords_path)
+    if not keywords_path.exists():
+        return None
+    with keywords_path.open("r", encoding="utf-8") as fp:
+        data = yaml.safe_load(fp) or []
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Classifier keywords root must be a list, got {type(data).__name__}"
+        )
+    rules: list[tuple[str, tuple[str, ...], str]] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"Classifier keyword rule #{i} must be a mapping.")
+        task_type = item.get("task_type")
+        keywords = item.get("keywords")
+        reason = item.get("reason")
+        if not isinstance(task_type, str) or not task_type:
+            raise ValueError(f"Rule #{i} missing/invalid `task_type`.")
+        if not isinstance(keywords, list) or not all(isinstance(k, str) for k in keywords):
+            raise ValueError(f"Rule #{i} `keywords` must be a list of strings.")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError(f"Rule #{i} missing/invalid `reason`.")
+        rules.append((task_type, tuple(keywords), reason))
+    return rules
+
+
 def load_classifier_prototypes() -> dict[str, list[str]] | None:
     """Load embedding-classifier prototypes from YAML, or None if the file is missing.
 

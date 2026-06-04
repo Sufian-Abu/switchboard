@@ -140,7 +140,9 @@ Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build
 
 Three files do all the work and are meant to be edited.
 
-- **`configs/config.yaml`** — routing rules. Every rule has `when:` (task type to match), `use:` (primary provider+model), and optional `fallbacks:`, `prefer:`, `max_cost_per_call:`, `cache:`.
+- **`configs/config.yaml`** — routing rules. Every rule has `when:` (task type or `metadata.*` match), `use:` (primary provider+model), and optional `fallbacks:`, `prefer:`, `max_cost_per_call:`, `allow_unknown_pricing_under_cap:`, `cache:`.
+- **`configs/classifier_keywords.yaml`** — keyword rules used by the classifier. Edit to tune for your domain without forking the code.
+- **`configs/classifier_prototypes.yaml`** — embedding-classifier prototypes (only used when the `embeddings` extra is installed).
 - **`configs/pricing.yaml`** — USD per million tokens, split by input/output. Use `"*"` as the model key for a provider-wide default (Ollama uses this).
 - **`apps/server/.env`** — secrets and feature flags. Copy from `.env.example`. Keys needed only for providers you route to. Set `ENABLE_EMBEDDING_CLASSIFIER=true` and `ENABLE_SEMANTIC_CACHE=true` to opt in to the embedding-backed features (requires the `embeddings` extra).
 
@@ -164,6 +166,7 @@ These are off by default for local development. Set them before exposing Switchb
 | `POST /v1/chat/compare` | Run a prompt across N models in parallel; returns each answer + cost + latency |
 | `POST /v1/chat/route` | Show the routing decision without calling any provider |
 | `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
+| `GET  /metrics` | Prometheus metrics (request count, provider latency histograms, cumulative cost, cache hit/miss). Requires the `metrics` extra. |
 | `GET  /health` | Liveness probe |
 | `GET  /` | Redirect to the dashboard |
 | `GET  /dashboard{,/playground,/requests,/cost}` | Web UI |
@@ -245,7 +248,16 @@ So inside Claude Code you can say *"summarize this 5KB file using the cheap rout
 
 ## Roadmap
 
-More providers (Anthropic first), a real vector-store backend for the cache, rate limiting, a plugin system so the community can add providers without forking, and at some point a TypeScript SDK.
+Short list, in priority order:
+
+- **Postgres as default** (asyncpg already supported via the `postgres` extra — promote to default once the migration tooling is in place).
+- **Redis-backed shared semantic cache** so multiple replicas can share state. Single-instance only today.
+- **Per-tenant cache scoping + auth** for multi-user / SaaS use. The single bearer token model isn't enough.
+- **Anthropic provider** (same shape as the other OpenAI-compatible ones).
+- **Dashboard polish**: filtering on the Requests page, CSV export, latency p50/p95/p99 columns, budget-alert webhooks.
+- **Exact tokenizers** (`tiktoken` for OpenAI/Groq, `transformers` for others) as an optional `tokenizers` extra so the cost preview is exact for billing.
+- **Plugin system** so the community can add providers without forking.
+- **TypeScript SDK** to lower integration friction.
 
 ## Contributing
 

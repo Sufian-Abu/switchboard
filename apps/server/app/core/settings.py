@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # Opt-in: use the embeddings classifier as a fallback when keyword rules
     # don't match. Requires `pip install -e ".[embeddings]"`.
     enable_embedding_classifier: bool = False
+    classifier_keywords_path: str = "configs/classifier_keywords.yaml"
     classifier_prototypes_path: str = "configs/classifier_prototypes.yaml"
 
     # Opt-in: semantic cache. Same embeddings dep applies. Threshold is 0.97 because

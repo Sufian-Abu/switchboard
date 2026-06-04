@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select
 
 from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
@@ -198,18 +198,23 @@ async def cost_breakdown(window_days: int = 7) -> dict:
             for row in (await session.execute(by_model_q)).all()
         ]
 
-        # Daily cost — group by date(ts). SQLite-friendly: format ts as YYYY-MM-DD.
+        # Daily cost — group by the date portion of ts. `cast(ts, Date)` is
+        # portable across SQLite and Postgres (and works with any other
+        # SQLAlchemy dialect we might add later).
+        day_col = cast(RequestLog.ts, Date).label("day")
         day_q = (
             select(
-                func.strftime("%Y-%m-%d", RequestLog.ts).label("day"),
+                day_col,
                 func.coalesce(func.sum(RequestLog.estimated_usd), 0.0),
             )
             .where(RequestLog.ts >= cutoff)
-            .group_by("day")
-            .order_by("day")
+            .group_by(day_col)
+            .order_by(day_col)
         )
         day_rows = (await session.execute(day_q)).all()
-        daily_labels = [r[0] for r in day_rows]
+        # The cast returns date objects on Postgres and strings on SQLite —
+        # normalise to YYYY-MM-DD for chart labels.
+        daily_labels = [r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]) for r in day_rows]
         daily_values = [float(r[1] or 0.0) for r in day_rows]
 
     return {

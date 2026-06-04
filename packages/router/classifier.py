@@ -21,8 +21,10 @@ from dataclasses import dataclass, field
 from router.embedder import Embedder
 from router.schemas import ClassifiedTask
 
-# Keyword maps. Each tuple is (task_type, keywords, reason).
-_RULES: list[tuple[str, tuple[str, ...], str]] = [
+# Default in-code keyword rules. Override by loading
+# `configs/classifier_keywords.yaml` and passing the result as `keyword_rules`
+# to `TaskClassifier`. Each tuple is (task_type, keywords, reason).
+DEFAULT_KEYWORD_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("rewrite",
      ("rewrite", "rephrase", "grammar", "fix this email"),
      "Detected rewrite/rephrase style keywords."),
@@ -80,6 +82,9 @@ class TaskClassifier:
 
     embedder: Embedder | None = None
     prototypes: dict[str, list[str]] = field(default_factory=lambda: dict(DEFAULT_PROTOTYPES))
+    keyword_rules: list[tuple[str, tuple[str, ...], str]] = field(
+        default_factory=lambda: list(DEFAULT_KEYWORD_RULES)
+    )
     min_similarity: float = 0.45
 
     # Embedded prototypes cached after first use: { task_type: [vector, ...] }
@@ -87,7 +92,7 @@ class TaskClassifier:
 
     def _keyword_classify(self, full_text: str) -> ClassifiedTask | None:
         text = full_text.lower()
-        for task_type, keywords, reason in _RULES:
+        for task_type, keywords, reason in self.keyword_rules:
             if any(k in text for k in keywords):
                 return ClassifiedTask(task_type=task_type, reason=reason)
         return None

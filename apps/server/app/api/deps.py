@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import (
+    load_classifier_keywords,
     load_classifier_prototypes,
     load_pricing_config,
     load_yaml_config,
@@ -42,15 +43,18 @@ def get_classifier() -> TaskClassifier:
     # Try to attach an embedder; falls back to keyword-only if the
     # optional `embeddings` extra wasn't installed.
     embedder = try_get_embedder() if settings.enable_embedding_classifier else None
-    # Load user-editable prototypes if present; the classifier falls back to its
-    # in-code defaults when None.
+    # Load user-editable keyword + prototype configs if present.
     try:
+        custom_keywords = load_classifier_keywords()
         custom_prototypes = load_classifier_prototypes()
     except (FileNotFoundError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
+    kwargs: dict = {"embedder": embedder}
+    if custom_keywords is not None:
+        kwargs["keyword_rules"] = custom_keywords
     if custom_prototypes is not None:
-        return TaskClassifier(embedder=embedder, prototypes=custom_prototypes)
-    return TaskClassifier(embedder=embedder)
+        kwargs["prototypes"] = custom_prototypes
+    return TaskClassifier(**kwargs)
 
 
 @lru_cache(maxsize=1)

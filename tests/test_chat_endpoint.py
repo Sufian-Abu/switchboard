@@ -160,7 +160,15 @@ def test_route_endpoint_returns_decision_without_calling_provider(client: TestCl
     assert isinstance(body["cache_enabled"], bool)
 
 
-def test_route_endpoint_explicit_model_short_circuits(client: TestClient) -> None:
+def test_route_endpoint_explicit_model_short_circuits(
+    monkeypatch, client: TestClient
+) -> None:
+    """Legacy behaviour: when ALLOW_CLIENT_MODEL_OVERRIDE=true, the route endpoint
+    previews the manual short-circuit decision. (Default is to reject — see
+    test_route_endpoint_rejects_client_model_by_default in test_security_followup.)"""
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "allow_client_model_override", True)
     response = client.post(
         "/v1/chat/route",
         json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},

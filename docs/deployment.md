@@ -133,6 +133,50 @@ server {
 }
 ```
 
+## Postgres (instead of SQLite)
+
+SQLite is the default and is fine for single-instance use. For shared deployments or longer retention, switch to Postgres. The schema is created on first boot by SQLAlchemy.
+
+```bash
+pip install -e ".[postgres]"
+
+# In apps/server/.env:
+DATABASE_URL=postgresql+asyncpg://switchboard:password@db.internal:5432/switchboard
+```
+
+Then in `docker-compose.yml`:
+
+```yaml
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: switchboard
+      POSTGRES_USER: switchboard
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    secrets:
+      - db_password
+
+  switchboard:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://switchboard:${DB_PASSWORD}@db:5432/switchboard
+    depends_on:
+      - db
+
+volumes:
+  pg-data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+```
+
+Day-grouping in the dashboard uses `CAST(ts AS DATE)`, which is portable across SQLite and Postgres without changes.
+
+The in-memory semantic cache still doesn't share across replicas — Postgres helps with the request log + spend cap, but you'll need a Redis-backed cache for horizontal scaling. That's on the roadmap.
+
 ## Kubernetes
 
 A minimal `Deployment` + `Service` + `Ingress`. The `Secret` carries the bearer token and provider keys.

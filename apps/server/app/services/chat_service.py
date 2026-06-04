@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from time import perf_counter
 from typing import AsyncIterator
 
 from fastapi import HTTPException
@@ -25,6 +26,7 @@ from app.api.deps import (
 from app.core.settings import settings
 from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
+from app.metrics import observe_cache, observe_cost, observe_provider_call, observe_request
 from app.services.budget_service import assert_under_daily_cap
 
 
@@ -322,6 +324,7 @@ class ChatService:
                         status="succeeded",
                     )
                 )
+                observe_cache("hit")
                 log.info(
                     "[%s] cache hit provider=%s model=%s task_type=%s",
                     request_id,
@@ -329,8 +332,11 @@ class ChatService:
                     primary_model,
                     decision.task_type,
                 )
+            else:
+                observe_cache("miss")
 
         for provider_name, model_name in (candidates if not cache_hit else []):
+            started = perf_counter()
             try:
                 provider = get_provider(provider_name)
                 provider_response = await provider.chat(
@@ -339,6 +345,8 @@ class ChatService:
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
                 )
+                latency = perf_counter() - started
+                observe_provider_call(provider_name, model_name, "succeeded", latency)
                 attempts.append(
                     RoutingAttempt(
                         provider=provider_name,
@@ -357,6 +365,8 @@ class ChatService:
                 )
                 break
             except ProviderError as exc:
+                latency = perf_counter() - started
+                observe_provider_call(provider_name, model_name, "failed", latency)
                 attempts.append(
                     RoutingAttempt(
                         provider=provider_name,
@@ -383,6 +393,7 @@ class ChatService:
         if provider_response is None:
             # All candidates exhausted or non-retryable error — log + surface.
             assert last_error is not None
+            observe_request("/v1/chat/completions", "failed")
             await _write_log(
                 request_id=request_id,
                 task_type=classified_task.task_type,
@@ -411,6 +422,7 @@ class ChatService:
         # Store in semantic cache on a fresh (non-hit) success.
         if not cache_hit and sem_cache is not None and prompt_for_cache:
             sem_cache.store(prompt_for_cache, used_model, provider_response)
+            observe_cache("store")
 
         cost_estimate = get_cost_engine().estimate(
             provider=used_provider,
@@ -426,6 +438,9 @@ class ChatService:
             output_rate_per_million=cost_estimate.output_rate_per_million,
             pricing_known=cost_estimate.pricing_known,
         )
+
+        observe_cost(used_provider, used_model, cost_estimate.estimated_usd)
+        observe_request("/v1/chat/completions", "succeeded")
 
         await _write_log(
             request_id=request_id,

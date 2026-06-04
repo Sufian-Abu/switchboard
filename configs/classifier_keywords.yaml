@@ -1,0 +1,23 @@
+# Keyword classifier rules.
+#
+# The TaskClassifier walks this list top to bottom and returns the first
+# match. Keywords are matched with `in` (substring) against the lowercased
+# joined message text — keep them lowercase and short. If you add a task type
+# here, also add a matching routing rule in configs/config.yaml or it will
+# fall through to the default route.
+
+- task_type: rewrite
+  keywords: [rewrite, rephrase, grammar, "fix this email"]
+  reason: "Detected rewrite/rephrase style keywords."
+
+- task_type: summarization
+  keywords: [summarize, summary, "short summary", "tl;dr"]
+  reason: "Detected summarization keywords."
+
+- task_type: structured_extraction
+  keywords: [json, "extract fields", "structured output", "as a list"]
+  reason: "Detected structured output keywords."
+
+- task_type: reasoning
+  keywords: [architecture, design, tradeoff, "reason deeply", "step by step"]
+  reason: "Detected higher-complexity reasoning keywords."

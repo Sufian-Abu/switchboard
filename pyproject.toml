@@ -40,6 +40,12 @@ embeddings = [
 mcp = [
     "mcp>=1.0.0",
 ]
+postgres = [
+    "asyncpg>=0.29.0",
+]
+metrics = [
+    "prometheus-client>=0.20.0",
+]
 
 [project.scripts]
 switchboard-mcp = "apps.mcp.server:main"
