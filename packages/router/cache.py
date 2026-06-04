@@ -8,10 +8,26 @@ configured threshold AND the model matches.
 This is a deliberately simple implementation:
   - in-process only (no Redis / sqlite-vss),
   - linear scan per lookup (fine for small N),
-  - LRU eviction at a fixed size.
+  - LRU eviction at a fixed size,
+  - default similarity threshold 0.97 (up from 0.95 — see warning below).
 
 When N grows past ~1000 entries or latency matters, swap this for sqlite-vss
 or a real vector store. The interface stays the same.
+
+**SAFETY WARNING — read before enabling.**
+
+Semantic caching returns a previously-stored response when a *similar but not
+identical* prompt arrives. That is unsafe for:
+
+  - Legal, financial, or medical advice (a near-match prompt may have a
+    materially different intent — e.g. "should I sue" vs "should I not sue").
+  - PII / customer-specific data (one user's response served to another).
+  - Anything where the prompt's named entities, negations, or numbers matter.
+  - Compliance-regulated workloads in general.
+
+Cache scoping per tenant / per user is NOT YET BUILT. Until it is, enable
+this only for workloads where any plausibly-similar prompt should get the
+same answer (FAQs, generic summarisation of public data, etc.).
 """
 from __future__ import annotations
 
@@ -55,7 +71,7 @@ class SemanticCache:
     def __init__(
         self,
         embedder: Embedder,
-        similarity_threshold: float = 0.95,
+        similarity_threshold: float = 0.97,
         max_entries: int = 256,
     ) -> None:
         self.embedder = embedder

@@ -15,6 +15,7 @@ from app.schemas.chat import (
     ChatCompareResponse,
     ComparisonResult,
 )
+from app.services.budget_service import assert_under_daily_cap
 from router.errors import ProviderError
 
 
@@ -96,6 +97,7 @@ async def _run_one(
 
 
 async def compare_request(request: ChatCompareRequest) -> ChatCompareResponse:
+    await assert_under_daily_cap()
     if request.candidates is not None:
         candidates = [(c["provider"], c["model"]) for c in request.candidates]
     else:

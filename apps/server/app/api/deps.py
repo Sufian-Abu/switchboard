@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.core.config import load_pricing_config, load_yaml_config
+from app.core.config import (
+    load_classifier_prototypes,
+    load_pricing_config,
+    load_yaml_config,
+)
 from app.core.settings import settings
 from router.cache import SemanticCache
 from router.classifier import TaskClassifier
@@ -38,6 +42,14 @@ def get_classifier() -> TaskClassifier:
     # Try to attach an embedder; falls back to keyword-only if the
     # optional `embeddings` extra wasn't installed.
     embedder = try_get_embedder() if settings.enable_embedding_classifier else None
+    # Load user-editable prototypes if present; the classifier falls back to its
+    # in-code defaults when None.
+    try:
+        custom_prototypes = load_classifier_prototypes()
+    except (FileNotFoundError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if custom_prototypes is not None:
+        return TaskClassifier(embedder=embedder, prototypes=custom_prototypes)
     return TaskClassifier(embedder=embedder)
 
 

@@ -13,6 +13,8 @@ import time
 import uuid
 from typing import AsyncIterator
 
+from fastapi import HTTPException
+
 from app.api.deps import (
     get_classifier,
     get_cost_engine,
@@ -20,8 +22,25 @@ from app.api.deps import (
     get_provider,
     get_semantic_cache,
 )
+from app.core.settings import settings
 from app.db.models import RequestLog
 from app.db.session import get_sessionmaker
+from app.services.budget_service import assert_under_daily_cap
+
+
+def _reject_client_model_if_disabled(request_model: str | None) -> None:
+    """Raise 400 when the client supplied `model:` and overrides are off."""
+    if request_model and not settings.allow_client_model_override:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "model_override_disabled",
+                "message": (
+                    "This server rejects client-supplied `model` fields. "
+                    "Routing is decided by the configured policy."
+                ),
+            },
+        )
 from app.schemas.chat import (
     ChatCompletionChoice,
     ChatCompletionChoiceMessage,
@@ -100,6 +119,8 @@ class ChatService:
           - One `data: {"x_smart_router_meta": true, "routing": ..., "cost": ..., "usage": ...}` final metadata.
           - One `data: [DONE]` terminator.
         """
+        _reject_client_model_if_disabled(request.model)
+        await assert_under_daily_cap()
         classifier = get_classifier()
         decision_engine = get_decision_engine()
         messages_as_dict = [m.model_dump() for m in request.messages]
@@ -250,6 +271,8 @@ class ChatService:
         request: ChatCompletionRequest,
         request_id: str = "-",
     ) -> ChatCompletionResponse:
+        _reject_client_model_if_disabled(request.model)
+        await assert_under_daily_cap()
         classifier = get_classifier()
         decision_engine = get_decision_engine()
 

@@ -22,6 +22,7 @@ from app.api.deps import (
 from app.api.router import api_router
 from app.core.settings import settings
 from app.db.session import dispose_engine, init_engine
+from app.services.budget_service import BudgetExceededError
 from router.errors import ConfigError, ProviderError, RouterError
 from router.logger import get_logger
 
@@ -73,36 +74,76 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Enforce `Authorization: Bearer <api_token>` on /v1/* paths.
+    """Enforce authentication on protected paths.
 
-    No-op when `settings.api_token` is empty (default) so local-dev keeps
-    working without configuration. Dashboard pages are intentionally not
-    protected — put them behind a reverse proxy for production deployments.
+    - `/v1/*` paths always require `Authorization: Bearer <api_token>` when
+      `settings.api_token` is set.
+    - `/dashboard/*` and `/v1/cache/stats` also require auth when
+      `settings.dashboard_auth` is True. For browser convenience these paths
+      accept either a Bearer header (programmatic) OR HTTP Basic auth
+      (username ignored, password = api_token). The browser prompts the user
+      with a native auth dialog.
+
+    No-op when `settings.api_token` is empty (default).
     """
 
-    def _is_protected(self, path: str) -> bool:
+    _DASHBOARD_PREFIXES = ("/dashboard", "/v1/cache/stats")
+
+    def _is_v1_protected(self, path: str) -> bool:
         return path.startswith("/v1/")
+
+    def _is_dashboard_protected(self, path: str) -> bool:
+        return any(path.startswith(p) for p in self._DASHBOARD_PREFIXES)
+
+    def _credentials_valid(self, header: str, expected: str) -> bool:
+        """Accept `Bearer <token>` or `Basic <b64(user:token)>`."""
+        scheme, _, value = header.partition(" ")
+        scheme = scheme.lower()
+        if scheme == "bearer":
+            return value == expected
+        if scheme == "basic":
+            import base64
+            try:
+                decoded = base64.b64decode(value).decode("utf-8", errors="replace")
+            except Exception:
+                return False
+            _, _, password = decoded.partition(":")
+            return password == expected
+        return False
 
     async def dispatch(self, request: Request, call_next):
         token = settings.api_token
-        if not token or not self._is_protected(request.url.path):
+        if not token:
             return await call_next(request)
 
-        header = request.headers.get("authorization", "")
-        scheme, _, supplied = header.partition(" ")
-        if scheme.lower() != "bearer" or supplied != token:
-            rid = getattr(request.state, "request_id", "-")
+        path = request.url.path
+        is_v1 = self._is_v1_protected(path)
+        is_dash = settings.dashboard_auth and self._is_dashboard_protected(path)
+        if not is_v1 and not is_dash:
+            return await call_next(request)
+
+        if self._credentials_valid(request.headers.get("authorization", ""), token):
+            return await call_next(request)
+
+        rid = getattr(request.state, "request_id", "-")
+        # Dashboard requests come from browsers — return a WWW-Authenticate header
+        # so the browser pops a credential prompt.
+        if is_dash:
             return JSONResponse(
                 status_code=401,
-                content={
-                    "error": {
-                        "type": "unauthorized",
-                        "message": "Missing or invalid bearer token.",
-                        "request_id": rid,
-                    }
-                },
+                content={"error": {"type": "unauthorized", "request_id": rid}},
+                headers={"WWW-Authenticate": 'Basic realm="Switchboard dashboard"'},
             )
-        return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "type": "unauthorized",
+                    "message": "Missing or invalid bearer token.",
+                    "request_id": rid,
+                }
+            },
+        )
 
 
 # --- App --------------------------------------------------------------------
@@ -142,6 +183,30 @@ async def provider_error_handler(request: Request, exc: ProviderError) -> JSONRe
                 "type": "provider_error",
                 "provider": exc.provider,
                 "message": exc.message,
+                "request_id": rid,
+            }
+        },
+    )
+
+
+@app.exception_handler(BudgetExceededError)
+async def budget_exceeded_handler(request: Request, exc: BudgetExceededError) -> JSONResponse:
+    rid = getattr(request.state, "request_id", "-")
+    log.warning(
+        "[%s] budget_exceeded spent=%.4f cap=%.4f path=%s",
+        rid,
+        exc.spent,
+        exc.cap,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "type": "budget_exceeded",
+                "message": str(exc),
+                "spent_usd": exc.spent,
+                "cap_usd": exc.cap,
                 "request_id": rid,
             }
         },

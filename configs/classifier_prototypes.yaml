@@ -1,0 +1,39 @@
+# Embedding-classifier prototypes.
+#
+# These prompts anchor each task type in the semantic space the embedder uses.
+# When a request doesn't match any keyword rule in classifier.py, it's embedded
+# and compared against each prototype. The closest task type wins if cosine
+# similarity ≥ settings.semantic_cache_similarity_threshold.
+#
+# Add or remove examples per task type without code changes. Each task type
+# should have at least 3 prototypes for stable matching; more is better.
+# If you add a new task type here, also add a routing rule for it in
+# configs/config.yaml or it will fall through to the default route.
+
+rewrite:
+  - "Please make this email sound more professional."
+  - "Can you fix the wording on this paragraph?"
+  - "Rewrite the following sentence so it's clearer."
+  - "Polish this draft and make it more concise."
+  - "Reword this so it sounds less aggressive."
+
+summarization:
+  - "Give me the key points in two sentences."
+  - "TL;DR this article please."
+  - "Condense this into a paragraph."
+  - "Summarize the main argument briefly."
+  - "What's the gist of this document?"
+
+structured_extraction:
+  - "Pull the name, email, and date from this text."
+  - "Output the data as JSON with these fields."
+  - "Extract every product mentioned and return a list."
+  - "Give me a structured table of the entries."
+  - "Return the parsed fields in YAML."
+
+reasoning:
+  - "Walk me through the design tradeoffs."
+  - "Compare and contrast these two approaches."
+  - "Reason through why this implementation fails."
+  - "Explain step by step why this is correct."
+  - "Analyze the pros and cons of each option."

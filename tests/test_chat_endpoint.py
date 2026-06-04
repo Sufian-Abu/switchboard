@@ -70,8 +70,27 @@ def test_response_envelope_shape(client: TestClient) -> None:
     assert body["choices"][0]["message"]["role"] == "assistant"
 
 
-def test_explicit_model_routes_to_mock(client: TestClient) -> None:
-    """Phase 1 safety: client-supplied model is served by the mock provider."""
+def test_explicit_model_rejected_by_default(client: TestClient) -> None:
+    """Default policy: client-supplied `model:` is rejected as 400."""
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["type"] == "model_override_disabled"
+
+
+def test_explicit_model_routes_to_mock_when_override_enabled(
+    monkeypatch, client: TestClient
+) -> None:
+    """Legacy behaviour: when ALLOW_CLIENT_MODEL_OVERRIDE=true, requests with `model:`
+    route through the mock provider rather than being rejected outright."""
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "allow_client_model_override", True)
     response = client.post(
         "/v1/chat/completions",
         json={

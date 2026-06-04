@@ -144,6 +144,17 @@ Three files do all the work and are meant to be edited.
 - **`configs/pricing.yaml`** — USD per million tokens, split by input/output. Use `"*"` as the model key for a provider-wide default (Ollama uses this).
 - **`apps/server/.env`** — secrets and feature flags. Copy from `.env.example`. Keys needed only for providers you route to. Set `ENABLE_EMBEDDING_CLASSIFIER=true` and `ENABLE_SEMANTIC_CACHE=true` to opt in to the embedding-backed features (requires the `embeddings` extra).
 
+### Security-relevant settings
+
+These are off by default for local development. Set them before exposing Switchboard beyond `localhost`. See [docs/security.md](docs/security.md) and [docs/deployment.md](docs/deployment.md) for full guidance.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `API_TOKEN` | _(empty)_ | When set, requires `Authorization: Bearer <token>` on `/v1/*`. |
+| `DASHBOARD_AUTH` | `false` | When `true` (and `API_TOKEN` is set), `/dashboard/*` and `/v1/cache/stats` also require auth. Browsers can use HTTP Basic auth — password is the API token. |
+| `MAX_DAILY_USD` | `0` | Spend circuit-breaker. When the day's recorded USD spend crosses this, `/v1/chat/{completions,compare}` returns 503 until the next UTC day. `0` disables the cap. |
+| `ALLOW_CLIENT_MODEL_OVERRIDE` | `false` | When `false`, requests carrying a `model:` field are rejected with 400. The routing policy decides the model. |
+
 ## API surface
 
 | Method · path | Purpose |
@@ -216,14 +227,21 @@ Switchboard must be running. The MCP server exposes three tools:
 
 So inside Claude Code you can say *"summarize this 5KB file using the cheap router"* and the assistant calls `route_chat` instead of running summarization on its own expensive context.
 
+## Documentation
+
+- [Security guide](docs/security.md) — threat model, what's exposed by default, all the security controls.
+- [Deployment guide](docs/deployment.md) — Docker, compose, nginx/Caddy reverse proxies, Kubernetes manifests, hardening checklist.
+- [OpenClaw integration](docs/integrations/openclaw.md) — per-channel routing for the OpenClaw personal AI assistant.
+
 ## What it doesn't do (yet)
 
 - No Anthropic provider yet — planned, same shape as the other OpenAI-compatible ones.
-- The keyword classifier is hand-curated. The embeddings fallback helps but isn't a substitute for thinking about your domain.
-- The semantic cache is in-memory only. Single-instance only until a vector store backend lands.
-- Cost preview uses a token estimate (off by maybe 10-15% vs the real tokenizer). Good for decisions, not for billing.
-- Streaming has no fallback mid-response. If the first chunk lands and the connection drops, the stream aborts.
-- No rate limiting or multi-tenant auth. One bearer token is all that's built in.
+- The keyword classifier is hand-curated. The embeddings fallback helps but isn't a substitute for thinking about your domain. Prototypes are now editable in `configs/classifier_prototypes.yaml`.
+- The semantic cache is in-memory only. Single-instance only until a vector store backend lands. **Do not enable for legal / medical / financial / per-user PII workloads** — see [docs/security.md](docs/security.md).
+- Cost preview uses a token estimate (off by maybe 10-15% vs the real tokenizer). Good for routing decisions, not for billing or finance reports. Actual response cost uses the provider-reported token count and is exact.
+- Streaming has no fallback mid-response. If the first chunk lands and the connection drops, the stream aborts. (Non-streaming requests fall back cleanly.)
+- No per-IP rate limiting or multi-tenant auth. The spend circuit-breaker (`MAX_DAILY_USD`) protects against runaway cost; per-IP/per-token rate limiting belongs in a reverse proxy.
+- Single-instance only. Both the semantic cache and the persistent request log are local; running >1 replica gives you fragmented state until both are externalised.
 
 ## Roadmap
 

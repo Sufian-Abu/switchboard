@@ -66,3 +66,26 @@ def load_pricing_config() -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Pricing root must be a mapping, got {type(data).__name__}")
     return data
+
+
+def load_classifier_prototypes() -> dict[str, list[str]] | None:
+    """Load embedding-classifier prototypes from YAML, or None if the file is missing.
+
+    Returning None lets the classifier fall back to its in-code DEFAULT_PROTOTYPES.
+    """
+    proto_path = _resolve(settings.classifier_prototypes_path)
+    if not proto_path.exists():
+        return None
+    with proto_path.open("r", encoding="utf-8") as fp:
+        data = yaml.safe_load(fp) or {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Classifier prototypes root must be a mapping, got {type(data).__name__}"
+        )
+    # Validate that values are lists of strings.
+    for task, examples in data.items():
+        if not isinstance(examples, list) or not all(isinstance(x, str) for x in examples):
+            raise ValueError(
+                f"Classifier prototypes for {task!r} must be a list of strings."
+            )
+    return data
