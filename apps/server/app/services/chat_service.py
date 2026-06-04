@@ -108,6 +108,7 @@ class ChatService:
         decision = decision_engine.decide(
             classified_task=classified_task,
             request_model=request.model,
+            metadata=request.metadata,
         )
         used_provider = decision.provider
         used_model = decision.model
@@ -258,6 +259,7 @@ class ChatService:
         decision = decision_engine.decide(
             classified_task=classified_task,
             request_model=request.model,
+            metadata=request.metadata,
         )
 
         # `provider="manual"` is the DecisionEngine's signal that the caller

@@ -1,0 +1,108 @@
+# OpenClaw per-channel routing.
+#
+# OpenClaw (https://github.com/openclaw/openclaw) is a personal AI assistant
+# that forwards user messages from 20+ channels (WhatsApp, Slack, Telegram,
+# iMessage, Discord, ...) to an OpenAI-compatible LLM backend. Point that
+# backend at Switchboard and you get task-aware AND channel-aware routing.
+#
+# Configure OpenClaw to attach the channel name in the `metadata` block of
+# the chat completion request, e.g.:
+#
+#     {
+#       "messages": [...],
+#       "metadata": { "channel": "whatsapp", "workspace": "work" }
+#     }
+#
+# Then this recipe routes per channel. Casual channels (WhatsApp/Telegram)
+# go to free local Ollama. Work Slack hits a premium model. Anything that
+# doesn't match falls through to task-type rules.
+#
+# Requires: Ollama + llama3.2:1b for the local routes; GROQ_API_KEY and
+# GEMINI_API_KEY for the cloud fallbacks; OPENAI_API_KEY for work-Slack.
+
+default:
+  provider: ollama
+  model: llama3.2:1b
+
+routing:
+  rules:
+    # --- Personal channels: free local Ollama -------------------------------
+    - name: openclaw_whatsapp_local
+      when: { metadata.channel: whatsapp }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: openclaw_telegram_local
+      when: { metadata.channel: telegram }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: openclaw_signal_local
+      when: { metadata.channel: signal }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: openclaw_imessage_local
+      when: { metadata.channel: imessage }
+      use:  { provider: ollama, model: llama3.2:1b }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    # --- Work channels: premium reasoning model -----------------------------
+    # Use a `workspace: work` metadata tag in OpenClaw to mark important Slacks.
+    - name: openclaw_work_slack_premium
+      when: { metadata.channel: slack, metadata.workspace: work }
+      use:  { provider: openai, model: gpt-4o }
+      fallbacks:
+        - { provider: groq, model: llama-3.3-70b-versatile }
+
+    # Any other Slack (personal / community / hobby) goes to balanced.
+    - name: openclaw_slack_balanced
+      when: { metadata.channel: slack }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: gemini, model: gemini-2.5-flash }
+
+    # --- Voice (iOS/Android): tiny + fast for latency -----------------------
+    - name: openclaw_voice_fast
+      when: { metadata.channel: voice }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+
+    # --- Discord/Teams/etc. catch-all: balanced -----------------------------
+    - name: openclaw_misc_chat
+      when: { metadata.channel: discord }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+
+    # --- Task-type fallback when channel isn't specified --------------------
+    # (e.g. webchat, or any client that doesn't set metadata.channel)
+    - name: tasktype_rewrite
+      when: { task_type: rewrite }
+      use:  { provider: groq, model: llama-3.1-8b-instant }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+
+    - name: tasktype_summarize
+      when: { task_type: summarization }
+      use:  { provider: gemini, model: gemini-2.5-flash }
+      fallbacks:
+        - { provider: groq, model: llama-3.1-8b-instant }
+
+    - name: tasktype_structured
+      when: { task_type: structured_extraction }
+      use:  { provider: groq, model: llama-3.3-70b-versatile }
+      fallbacks:
+        - { provider: gemini, model: gemini-2.5-flash }
+
+    - name: tasktype_reasoning
+      when: { task_type: reasoning }
+      use:       { provider: groq, model: llama-3.3-70b-versatile }
+      fallbacks:
+        - { provider: ollama, model: llama3.2:1b }
+      prefer: cheapest

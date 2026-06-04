@@ -177,6 +177,7 @@ Don't want to write a routing config from scratch? Drop one of the prebaked reci
 | `quality-first.yaml` | Premium model per task. No penny-pinching | `OPENAI_API_KEY` (preferred) or `GROQ_API_KEY` |
 | `local-first.yaml` | Try local first; cloud only on failure. Privacy / offline | Ollama running |
 | `balanced.yaml` | Small/cheap by default with automatic fallback to bigger models. Best starting point | `GROQ_API_KEY`, `GEMINI_API_KEY` |
+| `openclaw-channels.yaml` | Per-channel routing for [OpenClaw](https://github.com/openclaw/openclaw) — WhatsApp/Telegram/iMessage to local Ollama, work Slack to GPT-4o. See [docs/integrations/openclaw.md](docs/integrations/openclaw.md) | Ollama + provider keys; OpenClaw on the front end |
 
 ```bash
 cp configs/recipes/balanced.yaml configs/config.yaml
