@@ -29,36 +29,95 @@
 
 Most apps using LLMs today aren't sticking to one provider. You probably have an OpenAI key, an Anthropic or Gemini key, maybe Groq for cheap fast inference, and Ollama for the things you'd rather keep on-device. Every team I've talked to ends up in roughly the same place: a thin Python file that picks a provider based on some half-written rules, a spreadsheet somewhere with last month's spend, and a quiet feeling that nobody actually knows where the money is going.
 
-The reason isn't that the problem is hard. The reason is that the tools for it pull you in two directions. On one side you have proxies like LiteLLM and OpenRouter — they unify the API surface, which is genuinely useful, but they don't really *route*. They send your request to whatever model you named and hand back the response. They have no opinion about whether a one-line rewrite should hit GPT-4 or a 1B local model. On the other side you have research projects like RouteLLM that take routing seriously, but you don't really run those in production.
+The reason isn't that the problem is hard. The reason is that the existing tools for it pull you in two directions. On one side, passthrough proxies — they unify the API surface, which is genuinely useful, but they don't really *route*. They send your request to whatever model you named and hand back the response. They have no opinion about whether a one-line rewrite should hit a flagship model or a 1B local one. On the other side, research projects take routing seriously but aren't built to run in production.
 
 What's missing is the thing in the middle. Something that looks at the request and decides what kind of task it is, picks a provider from a YAML file you actually control, falls back when one provider rate-limits you, and shows you, in real time, what each call cost and what each candidate model *would have* cost. That's what this is.
 
 ## What's different
 
 > [!TIP]
-> Switchboard isn't another OpenAI proxy. It's a routing **control plane** with five capabilities that no other open-source LLM router has all of together — pre-flight cost preview, provider health-based avoidance, graduated budget degradation, A/B testing, and a built-in dashboard with every decision visible.
+> Seven capabilities you'd otherwise stitch together yourself. They compose — use one, use all, swap any out through a single YAML file.
 
-| Capability | **Switchboard** | LiteLLM | OpenRouter | Portkey | Helicone |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Self-hosted (OSS, MIT) | ✓ | ✓ | ✗ hosted | partial | ✓ |
-| Task-aware classification | ✓ | ✗ | ✗ | ✗ | ✗ |
-| YAML routing rules you control | ✓ | partial | ✗ | partial | ✗ |
-| **Pre-flight cost preview** | ✓ | ✗ | ✗ | ✗ | ✗ |
-| **Per-response `routing` + `cost` block** | ✓ | ✗ | partial | ✗ | ✗ |
-| **Provider health-based preemptive avoidance** | ✓ | ✗ | ✗ | ✗ | ✗ |
-| **Graduated budget degradation (soft cap)** | ✓ | ✗ | ✗ | ✗ | ✗ |
-| **A/B testing with cohort comparison** | ✓ | ✗ | ✗ | partial | ✗ |
-| Channel / metadata-aware routing | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Side-by-side "Compare all models" UI | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Built-in dashboard | ✓ | ✗ | hosted only | partial | ✓ |
-| Local Ollama first-class | ✓ | ✓ | ✗ | ✗ | ✗ |
-| Streaming with routing metadata | ✓ | partial | ✓ | ✗ | ✗ |
-| MCP server for Claude Code / Cursor | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Eval harness (CI-friendly) | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Prometheus `/metrics` | ✓ | partial | ✗ | partial | ✓ |
+### See the cost before you send
+
+Hit `/v1/chat/estimate`; get a USD min/max per priced model. No upstream call, no tokens spent. The Playground does this live as you type.
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/estimate \
+  -d '{"messages":[{"role":"user","content":"summarize this paragraph"}]}'
+# → { "cheapest": { "provider": "ollama", "model": "llama3.2:1b" },
+#     "estimates": [ {provider, model, usd_min, usd_max}, ... ] }
+```
+
+### Every routing decision is visible
+
+Every response carries a `routing` block explaining what was chosen and why, plus a `cost` block with the USD breakdown. No more guessing which model your app actually used.
+
+```jsonc
+"routing": {
+  "selected_provider": "groq",
+  "selected_model": "llama-3.1-8b-instant",
+  "reason": "Matched routing rule: rewrite_to_groq_small",
+  "attempts": [{ "provider": "groq", "model": "...", "status": "succeeded" }]
+},
+"cost": {
+  "estimated_usd": 0.00000319,
+  "input_rate_per_million": 0.05,
+  "output_rate_per_million": 0.08
+}
+```
+
+### Avoid sick providers — don't just retry around them
+
+A rolling 5-minute window of error rate and p95 latency per provider. Tag a rule with `avoid_if_health: degraded` and the router skips that candidate *before* sending — not after a 30-second timeout.
+
+```yaml
+when: { task_type: summarization }
+use:  { provider: gemini, model: gemini-2.5-flash }
+fallbacks:
+  - { provider: groq, model: llama-3.1-8b-instant }
+avoid_if_health: degraded
+```
+
+### Graduated budget degradation
+
+Hard caps are binary — everything works, then 503s flood in. Switchboard adds a *soft* cap: at 80% of your daily budget (configurable), routing automatically reorders chains cheapest-first to stretch what's left. The dashboard surfaces the status flip in real time.
+
+```bash
+MAX_DAILY_USD=10.00
+DAILY_SOFT_CAP_PCT=0.8   # at 80%, prefer cheapest — still serving traffic
+```
+
+### A/B test routing changes safely
+
+Split a rule across cohorts; the dashboard compares cost, success rate, and token usage side-by-side. Pick a winner with data, not vibes.
+
+```yaml
+split:
+  - { name: groq_small,    provider: groq,   model: llama-3.1-8b-instant, weight: 80 }
+  - { name: gemini_flash,  provider: gemini, model: gemini-2.5-flash,    weight: 20 }
+```
+
+### Channel- and metadata-aware routing
+
+Tag requests at the source (`metadata.channel: whatsapp`); Switchboard matches on it. Same prompt can route to a local model from one channel and a premium model from another.
+
+```yaml
+- when: { metadata.channel: whatsapp }
+  use:  { provider: ollama, model: llama3.2:1b }    # free, private, on your laptop
+
+- when: { metadata.channel: slack, metadata.workspace: work }
+  use:  { provider: openai, model: gpt-4o }         # the channel that matters
+```
+
+### Compare every model, side by side
+
+The Playground's **Compare all** button fans your prompt across every priced model in parallel and renders the answers in a grid with cost, latency, and tokens. Cheapest tinted green, fastest blue. Decide which model to trust based on data instead of vendor marketing.
+
+---
 
 > [!IMPORTANT]
-> **The headline claim:** *"Automatically send the right request to the right model at the right cost — with awareness of provider health, remaining budget, and the channel it came from."* No other OSS LLM router can credibly say that.
+> **The headline:** *"Automatically send the right request to the right model at the right cost — with awareness of provider health, remaining budget, and the channel it came from."*
 
 ## Architecture
 
@@ -284,7 +343,7 @@ Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build
 
 ## What's in the box
 
-**Providers.** Mock, Groq, Gemini, OpenAI, and Ollama. The three OpenAI-compatible cloud providers share a streaming helper at `packages/router/providers/_openai_compat.py`, so adding another OpenAI-shaped one (Together, Fireworks, …) is about thirty lines. Ollama is implemented separately because its streaming format is JSONL rather than SSE.
+**Providers.** Mock, Groq, Gemini, OpenAI, and Ollama. The three OpenAI-compatible cloud providers share a streaming helper at `packages/router/providers/_openai_compat.py`, so adding another OpenAI-shaped provider is about thirty lines. Ollama is implemented separately because its streaming format is JSONL rather than SSE.
 
 **Cost engine.** Pricing lives in `configs/pricing.yaml` and is reloaded at startup. Every successful call gets a USD breakdown. The preview endpoint uses a rule-of-thumb token estimator (max of `chars/4` and `words × 1.3`) so you don't burn tokens to find out what they'd cost. Not exact, but right order of magnitude.
 
@@ -447,14 +506,14 @@ Short list, in priority order. Each item reinforces the core promise — *right 
 
 These adjacent features would turn Switchboard into a different product. We deliberately don't build them so the project stays sharp:
 
-- **Fine-tuning management** — use OpenAI / Together / Replicate's own tooling.
-- **Vector databases / RAG platform** — Pinecone, Weaviate, Chroma, pgvector exist for this.
-- **Full agent framework / workflow builder** — LangChain, LlamaIndex, n8n are dedicated tools.
+- **Fine-tuning management** — the providers' own consoles handle this.
+- **Vector databases / RAG platform** — dedicated vector DBs exist for this.
+- **Full agent framework / workflow builder** — dedicated agent and workflow tools exist.
 - **Enterprise SSO / SCIM / SOC2 dashboards** — these belong in a commercial wrapper, not the core router.
 - **Multi-tenant SaaS hosting** — Switchboard is self-hosted by design. The community can build a hosted offering on top.
-- **Prompt management / version control / playground-as-a-service** — Langfuse, Helicone, PromptLayer already do this well.
+- **Prompt management / version control / playground-as-a-service** — dedicated observability and prompt tools handle this.
 
-If your need is one of these, you're better served by the dedicated tools. Switchboard composes with them — sit it between your app and the provider, and use whichever observability/RAG/agent layer you prefer on top.
+If your need is one of these, you're better served by a dedicated tool. Switchboard composes with them — sit it between your app and the provider, and use whichever observability / RAG / agent layer you prefer on top.
 
 ## Contributing
 
