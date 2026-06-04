@@ -1,6 +1,28 @@
 # Switchboard
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)](#testing)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](#quick-start)
+
 A cost-aware LLM router with a built-in dashboard. Drop it in front of your app, send OpenAI-shaped requests, and stop worrying about which provider to use, what it costs, or what to do when one of them goes down.
+
+---
+
+**Jump to:**
+[The problem](#the-problem) ·
+[What it does](#what-it-does) ·
+[Quick start](#quick-start) ·
+[How a request flows](#how-a-request-flows) ·
+[Dashboard](#the-dashboard) ·
+[What's in the box](#whats-in-the-box) ·
+[Configuration](#configuration) ·
+[API surface](#api-surface) ·
+[Recipes](#recipes) ·
+[MCP](#use-it-from-claude-code--cursor--claude-desktop-mcp) ·
+[Docs](#documentation) ·
+[Limitations](#what-it-doesnt-do-yet) ·
+[Roadmap](#roadmap)
 
 ## The problem
 
@@ -16,32 +38,32 @@ A request comes in on `POST /v1/chat/completions`. The classifier decides this i
 
 ## Quick start
 
-### With Docker
+### Docker (one command)
 
 ```bash
 docker run -p 8000:8000 \
   -e GROQ_API_KEY=$GROQ_API_KEY \
   -e GEMINI_API_KEY=$GEMINI_API_KEY \
-  ghcr.io/<your-username>/switchboard:latest
+  ghcr.io/sufian-abu/switchboard:latest
 ```
 
 Open `http://localhost:8000` — you land on the dashboard.
 
-### With docker-compose (router + local Ollama)
+### docker-compose (router + local Ollama)
 
 ```bash
-git clone https://github.com/<your-username>/switchboard
+git clone https://github.com/Sufian-Abu/switchboard
 cd switchboard
 cp apps/server/.env.example apps/server/.env   # add your keys
 docker compose --profile with-ollama up
 ```
 
-### From source
+### From source (Python 3.11+)
 
 ```bash
-git clone https://github.com/<your-username>/switchboard
+git clone https://github.com/Sufian-Abu/switchboard
 cd switchboard
-python3.12 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                # add ",embeddings" for the hybrid classifier
 cp apps/server/.env.example apps/server/.env
 
@@ -103,52 +125,59 @@ The response is OpenAI-shaped with two extra blocks:
 }
 ```
 
-Want to know what something would cost before sending it? Hit `/v1/chat/estimate` with the same body and get a USD min/max per priced model. The dashboard's playground page does this live as you type.
+A few helpers built on the same engine:
 
-Want to *see every model's answer side by side*? `POST /v1/chat/compare` runs the same prompt against every priced model in parallel and returns each response with its cost and latency. The Playground page has a **Compare all** button that calls this and tints the cheapest answer green, the fastest blue.
-
-Want to debug a routing rule without burning tokens? `POST /v1/chat/route` returns the routing decision (task type, selected provider/model, fallback chain) with no upstream call.
-
-For streaming, add `"stream": true`. You get standard OpenAI SSE chunks followed by a `data: {"x_smart_router_meta": true, "routing": {...}, "cost": {...}}` event, then `data: [DONE]`. Standard OpenAI SDKs ignore the metadata event and keep working unchanged.
+- **Cost before you send** — `POST /v1/chat/estimate` returns USD min/max per priced model. The Playground does this live as you type.
+- **Side-by-side comparison** — `POST /v1/chat/compare` runs the same prompt across every priced model in parallel. The Playground's **Compare all** button tints the cheapest green and the fastest blue.
+- **Routing-only preview** — `POST /v1/chat/route` returns the routing decision without calling any provider, so you can debug rules without burning tokens.
+- **Streaming** — add `"stream": true`. You get standard OpenAI SSE chunks, then a `data: {"x_smart_router_meta": true, "routing": {...}, "cost": {...}}` event, then `data: [DONE]`. Standard OpenAI SDKs ignore the metadata event and keep working unchanged.
 
 ## The dashboard
 
 | Page | What's there |
 |---|---|
 | `/dashboard` | KPIs, cost-by-provider chart, task-type breakdown, recent calls |
-| `/dashboard/playground` | Live cost preview per model as you type, then run with streaming |
+| `/dashboard/playground` | Live cost preview per model as you type, then run with streaming, then a **Compare all** button |
 | `/dashboard/requests` | Full audit log: request ID, provider, model, tokens, USD, attempts |
 | `/dashboard/cost` | 7-day spend, daily chart, by-provider and by-model tables |
 
-Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build step.
+Server-rendered Jinja templates, Tailwind via CDN, Chart.js for charts. No build step. Open by default for local dev; set `DASHBOARD_AUTH=true` to lock it down — see the [security settings](#security-relevant-settings) below.
 
 ## What's in the box
 
-**Providers:** Mock, Groq, Gemini, OpenAI, and Ollama. The three OpenAI-compatible cloud providers share a streaming helper at `packages/router/providers/_openai_compat.py`, so adding another OpenAI-shaped one (Together, Fireworks, …) is about thirty lines. Ollama is implemented separately because its streaming format is JSONL rather than SSE.
+**Providers.** Mock, Groq, Gemini, OpenAI, and Ollama. The three OpenAI-compatible cloud providers share a streaming helper at `packages/router/providers/_openai_compat.py`, so adding another OpenAI-shaped one (Together, Fireworks, …) is about thirty lines. Ollama is implemented separately because its streaming format is JSONL rather than SSE.
 
-**Cost engine:** Pricing lives in `configs/pricing.yaml` and is reloaded at startup. Every successful call gets a USD breakdown. The preview endpoint uses a rule-of-thumb token estimator (max of `chars/4` and `words × 1.3`) so you don't burn tokens to find out what they'd cost. Not exact, but right order of magnitude.
+**Cost engine.** Pricing lives in `configs/pricing.yaml` and is reloaded at startup. Every successful call gets a USD breakdown. The preview endpoint uses a rule-of-thumb token estimator (max of `chars/4` and `words × 1.3`) so you don't burn tokens to find out what they'd cost. Not exact, but right order of magnitude.
 
-**Classifier:** Two layers used in order. Hand-curated keyword rules first — fast, deterministic, no model loading. If nothing matches, the optional embeddings classifier kicks in: it embeds the prompt and the prototype examples per task type and picks the closest. The second layer needs the `embeddings` extra (`pip install ".[embeddings]"`); the first works on its own.
+**Classifier.** Two layers used in order. Hand-curated keyword rules first — fast, deterministic, no model loading. Rules now live in `configs/classifier_keywords.yaml` so you can tune them for your domain without forking. If nothing matches, the optional embeddings classifier kicks in: it embeds the prompt and the prototype examples per task type and picks the closest. The second layer needs the `embeddings` extra (`pip install ".[embeddings]"`); the first works on its own.
 
-**Fallback chain:** Each rule can list fallback `(provider, model)` pairs after `use:`. On retryable errors (rate limit, 5xx, network) the next candidate is tried. 4xx errors aren't retried — a malformed request won't succeed elsewhere either. Streaming doesn't fall back mid-response (that would corrupt output).
+**Fallback chain.** Each rule can list fallback `(provider, model)` pairs after `use:`. On retryable errors (rate limit, 5xx, network) the next candidate is tried. 4xx errors aren't retried — a malformed request won't succeed elsewhere either. Streaming doesn't fall back mid-response (that would corrupt output).
 
-**Semantic cache:** Per-rule opt-in via `cache: true`. Embeds the prompt and looks for one above a cosine-similarity threshold for the same model. Hit → return cached response, no provider call. In-memory, LRU eviction at 256 entries. Replace with sqlite-vss or a real vector store before scaling horizontally.
+**Cost-aware routing.** Set `prefer: cheapest` on a rule and candidates are reordered by expected USD per call before selection. Set `max_cost_per_call: N` and any candidate above the cap is excluded; if every candidate is excluded the engine moves on to the next rule. Default is *fail closed* — candidates with no pricing entry are excluded under a cap, unless you opt in with `allow_unknown_pricing_under_cap: true` (use only for trusted free providers like local Ollama).
 
-**Auth:** Disabled by default. Set `API_TOKEN` and `/v1/*` paths require `Authorization: Bearer <token>`. The dashboard stays open — put it behind a reverse proxy if you need to lock it down.
+**Semantic cache.** Per-rule opt-in via `cache: true`. Embeds the prompt and looks for one above a cosine-similarity threshold (default 0.97) for the same model. Hit → return cached response, no provider call. In-memory, LRU eviction at 256 entries. **Don't enable for legal / medical / financial / per-user PII workloads** — there's no per-tenant scoping yet. See [docs/security.md](docs/security.md).
+
+**Auth.** Off by default. Set `API_TOKEN` and `/v1/*` paths require `Authorization: Bearer <token>`. Set `DASHBOARD_AUTH=true` (with `API_TOKEN`) and `/dashboard/*` plus `/v1/cache/stats` are also locked down. Browsers can authenticate with HTTP Basic auth — password is the API token — so the native browser credential prompt works.
+
+**Spend circuit-breaker.** Set `MAX_DAILY_USD=N` and the day's recorded spend is checked before each `/v1/chat/{completions,compare}` call. When the cap is hit the endpoint returns 503 with a structured error until the next UTC day. Defends against runaway-cost incidents.
+
+**Observability.** Built-in dashboard + `/metrics` Prometheus endpoint (request counts by endpoint/status, provider latency histograms, cumulative cost by provider/model, cache hit/miss counters). The metrics endpoint requires the `metrics` extra.
 
 ## Configuration
 
-Three files do all the work and are meant to be edited.
+Five files do all the work and are meant to be edited.
 
-- **`configs/config.yaml`** — routing rules. Every rule has `when:` (task type or `metadata.*` match), `use:` (primary provider+model), and optional `fallbacks:`, `prefer:`, `max_cost_per_call:`, `allow_unknown_pricing_under_cap:`, `cache:`.
-- **`configs/classifier_keywords.yaml`** — keyword rules used by the classifier. Edit to tune for your domain without forking the code.
-- **`configs/classifier_prototypes.yaml`** — embedding-classifier prototypes (only used when the `embeddings` extra is installed).
-- **`configs/pricing.yaml`** — USD per million tokens, split by input/output. Use `"*"` as the model key for a provider-wide default (Ollama uses this).
-- **`apps/server/.env`** — secrets and feature flags. Copy from `.env.example`. Keys needed only for providers you route to. Set `ENABLE_EMBEDDING_CLASSIFIER=true` and `ENABLE_SEMANTIC_CACHE=true` to opt in to the embedding-backed features (requires the `embeddings` extra).
+| File | Purpose |
+|---|---|
+| `configs/config.yaml` | Routing rules. `when:` (task type or `metadata.*` match), `use:`, optional `fallbacks:`, `prefer:`, `max_cost_per_call:`, `allow_unknown_pricing_under_cap:`, `cache:`. |
+| `configs/classifier_keywords.yaml` | Keyword rules per task type. Edit to tune classification for your domain. |
+| `configs/classifier_prototypes.yaml` | Embedding prototypes per task type. Only used when the `embeddings` extra is installed. |
+| `configs/pricing.yaml` | Per-model pricing (USD per 1M tokens, input/output split). `"*"` is a provider-wide default. |
+| `apps/server/.env` | Secrets and feature flags. Copy from `.env.example`. |
 
 ### Security-relevant settings
 
-These are off by default for local development. Set them before exposing Switchboard beyond `localhost`. See [docs/security.md](docs/security.md) and [docs/deployment.md](docs/deployment.md) for full guidance.
+These are off by default for local development. Set them before exposing Switchboard beyond `localhost`. See [docs/security.md](docs/security.md) and [docs/deployment.md](docs/deployment.md) for the full guidance.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -162,11 +191,11 @@ These are off by default for local development. Set them before exposing Switchb
 | Method · path | Purpose |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI-compatible chat (JSON or SSE) |
-| `POST /v1/chat/estimate` | Cost preview across every priced model |
+| `POST /v1/chat/estimate` | Cost preview across every priced model — no upstream call |
 | `POST /v1/chat/compare` | Run a prompt across N models in parallel; returns each answer + cost + latency |
 | `POST /v1/chat/route` | Show the routing decision without calling any provider |
 | `GET  /v1/cache/stats` | Semantic cache hits/misses/entries |
-| `GET  /metrics` | Prometheus metrics (request count, provider latency histograms, cumulative cost, cache hit/miss). Requires the `metrics` extra. |
+| `GET  /metrics` | Prometheus metrics (requires the `metrics` extra) |
 | `GET  /health` | Liveness probe |
 | `GET  /` | Redirect to the dashboard |
 | `GET  /dashboard{,/playground,/requests,/cost}` | Web UI |
@@ -175,11 +204,11 @@ These are off by default for local development. Set them before exposing Switchb
 ## Testing
 
 ```bash
-pytest                       # 84 tests, ~1s, fully offline
+pytest                       # 120 tests, ~1.3s, fully offline
 python -m router.eval --cases evals/example.yaml
 ```
 
-The suite uses `TestClient` plus the `MockProvider` — no API keys needed. The eval harness loads YAML test cases (prompt → expected task type + provider/model) and exits with a CI-friendly status code.
+The suite uses FastAPI's `TestClient` plus the `MockProvider` — no API keys needed, no network calls, no flakes. The eval harness loads YAML test cases (`prompt` → expected task type + provider/model) and exits with a CI-friendly status code.
 
 ## Recipes
 
@@ -203,7 +232,7 @@ cp configs/recipes/balanced.yaml configs/config.yaml
 Switchboard ships with an MCP server adapter, so AI coding assistants can offload sub-tasks to your router instead of always burning their own expensive tokens.
 
 ```bash
-pip install -e ".[mcp]"   # adds the `mcp` extra
+pip install -e ".[mcp]"
 ```
 
 Then in Claude Desktop's `claude_desktop_config.json` (or the equivalent in Claude Code / Cursor):
@@ -232,29 +261,30 @@ So inside Claude Code you can say *"summarize this 5KB file using the cheap rout
 
 ## Documentation
 
-- [Security guide](docs/security.md) — threat model, what's exposed by default, all the security controls.
-- [Deployment guide](docs/deployment.md) — Docker, compose, nginx/Caddy reverse proxies, Kubernetes manifests, hardening checklist.
-- [OpenClaw integration](docs/integrations/openclaw.md) — per-channel routing for the OpenClaw personal AI assistant.
+| Doc | What's in it |
+|---|---|
+| [Security guide](docs/security.md) | Threat model, what's exposed by default, every security control, secrets, recommended deployment posture. |
+| [Deployment guide](docs/deployment.md) | Docker, compose, nginx/Caddy reverse proxies, Postgres setup, Kubernetes manifests, hardening checklist. |
+| [OpenClaw integration](docs/integrations/openclaw.md) | Per-channel routing for the OpenClaw personal AI assistant. |
 
 ## What it doesn't do (yet)
 
-- No Anthropic provider yet — planned, same shape as the other OpenAI-compatible ones.
-- The keyword classifier is hand-curated. The embeddings fallback helps but isn't a substitute for thinking about your domain. Prototypes are now editable in `configs/classifier_prototypes.yaml`.
-- The semantic cache is in-memory only. Single-instance only until a vector store backend lands. **Do not enable for legal / medical / financial / per-user PII workloads** — see [docs/security.md](docs/security.md).
-- Cost preview uses a token estimate (off by maybe 10-15% vs the real tokenizer). Good for routing decisions, not for billing or finance reports. Actual response cost uses the provider-reported token count and is exact.
-- Streaming has no fallback mid-response. If the first chunk lands and the connection drops, the stream aborts. (Non-streaming requests fall back cleanly.)
-- No per-IP rate limiting or multi-tenant auth. The spend circuit-breaker (`MAX_DAILY_USD`) protects against runaway cost; per-IP/per-token rate limiting belongs in a reverse proxy.
-- Single-instance only. Both the semantic cache and the persistent request log are local; running >1 replica gives you fragmented state until both are externalised.
+- **No Anthropic provider yet** — planned, same shape as the other OpenAI-compatible ones.
+- **The keyword classifier is hand-curated.** Rules + embedding prototypes are both YAML-editable, but they aren't a substitute for thinking about your domain.
+- **The semantic cache is in-memory only.** Single-instance only until a Redis backend lands. Do not enable for legal / medical / financial / per-user PII workloads — see [docs/security.md](docs/security.md).
+- **Cost preview uses a token estimate** (off by maybe 10-15% vs the real tokenizer). Good for routing decisions, not for billing. Actual response cost uses provider-reported tokens and is exact.
+- **Streaming has no fallback mid-response.** If the first chunk lands and the connection drops, the stream aborts. Non-streaming requests fall back cleanly.
+- **No per-IP rate limiting or multi-tenant auth.** The spend circuit-breaker (`MAX_DAILY_USD`) protects against runaway cost; per-IP / per-token rate limiting belongs in a reverse proxy.
+- **Single-instance only.** Both the semantic cache and the persistent request log are local; running multiple replicas gives you fragmented state until both are externalised. Postgres is supported for the log today (`[postgres]` extra); Redis for the cache is on the roadmap.
 
 ## Roadmap
 
 Short list, in priority order:
 
-- **Postgres as default** (asyncpg already supported via the `postgres` extra — promote to default once the migration tooling is in place).
-- **Redis-backed shared semantic cache** so multiple replicas can share state. Single-instance only today.
+- **Redis-backed shared semantic cache** so multiple replicas can share state.
 - **Per-tenant cache scoping + auth** for multi-user / SaaS use. The single bearer token model isn't enough.
 - **Anthropic provider** (same shape as the other OpenAI-compatible ones).
-- **Dashboard polish**: filtering on the Requests page, CSV export, latency p50/p95/p99 columns, budget-alert webhooks.
+- **Dashboard polish** — filtering on the Requests page, CSV export, latency p50/p95/p99 columns, budget-alert webhooks.
 - **Exact tokenizers** (`tiktoken` for OpenAI/Groq, `transformers` for others) as an optional `tokenizers` extra so the cost preview is exact for billing.
 - **Plugin system** so the community can add providers without forking.
 - **TypeScript SDK** to lower integration friction.
